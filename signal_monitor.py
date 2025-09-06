@@ -9,6 +9,7 @@ import time
 from typing import Optional, Dict, Any, Iterable
 
 
+# Message patterns
 ARROW_RE = re.compile(
     r"^Alert:\s+(?P<side>Buy|Sell)\s+Arrow\s+(?P<symbol>[A-Z0-9]+)\s+(?P<tf>[A-Z]\d+)\s+(?P<sig_time>\d{1,2}:\d{2})\s*$",
     re.IGNORECASE,
@@ -23,22 +24,31 @@ DARK_POINT_RE = re.compile(
 
 SRC_CTX_RE = re.compile(r"^(?P<src>.+?)\s*\((?P<symbol>[A-Z0-9]+),(?P<tf>[A-Z0-9]+)\)\s*$")
 
+# Time column detector (e.g., 23:45:01.244 or 04:10:00)
+TIME_RE = re.compile(r"^\d{1,2}:\d{2}:\d{2}(?:\.\d+)?$")
+
 
 def parse_signal(fields: Iterable[str]) -> Optional[Dict[str, Any]]:
-    """Parse a tab-separated log line into a signal dict, if applicable.
+    """Parse a tab-separated log line into a signal dict, tolerant to layout.
 
-    Expected layout (tab-separated):
-    - col0: short code (ignored)
-    - col1: status (ignored)
-    - col2: log time (e.g., 04:10:00.966)
-    - col3: source context (e.g., "Dark Bands MT5 (BTCUSD,M5)")
-    - col4: message (e.g., "Alert: Buy Arrow  XAUUSD M5 23:05")
+    Supports both of these examples by inferring fields from the end:
+    - "0\tOK\t04:10:00.966\tDark Bands MT5 (BTCUSD,M5)\tAlert: Buy Arrow  XAUUSD M5 23:05"
+    - "0\t23:45:01.244\tDark Bands MT5 (BTCUSD,M1)\tAlert: Sell Arrow  BTCUSD M1 18:44"
     """
-    cols = list(fields)
-    if len(cols) < 5:
+    cols = [c for c in fields]
+    if len(cols) < 3:
         return None
 
-    _, _, log_time, src_ctx, message = cols[:5]
+    # Always take last two columns as (src_ctx, message)
+    message = cols[-1]
+    src_ctx = cols[-2]
+
+    # Find a time-like column earlier (ignore the first arbitrary token/word)
+    log_time = ""
+    for c in cols[:-2]:
+        if TIME_RE.match(c):
+            log_time = c
+            break
 
     # Extract helpful context from source column
     src_name = None

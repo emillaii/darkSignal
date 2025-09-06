@@ -30,6 +30,8 @@ DARK_POINT_RE = re.compile(
 )
 
 SRC_CTX_RE = re.compile(r"^(?P<src>.+?)\s*\((?P<symbol>[A-Z0-9]+),(?P<tf>[A-Z0-9]+)\)\s*$")
+# Alternative source format: "Dark Bands SYMBOL,TF" (no parentheses)
+SRC_CTX_COMMA_RE = re.compile(r"^(?P<src>.+?)\s+(?P<symbol>[A-Z0-9]+),(?P<tf>[A-Z0-9]+)\s*$")
 
 # Time column detector (e.g., 23:45:01.244 or 04:10:00)
 TIME_RE = re.compile(r"^\d{1,2}:\d{2}:\d{2}(?:\.\d+)?$")
@@ -46,15 +48,27 @@ def parse_signal(fields: Iterable[str]) -> Optional[Dict[str, Any]]:
     if len(cols) < 3:
         return None
 
-    # Always take last two columns as (src_ctx, message)
+    # Determine src_ctx and message positions. Some logs provide only 3 cols
+    # with combined "<src>: Alert: ..." in the last column.
     message = cols[-1]
-    src_ctx = cols[-2]
+    src_ctx = ""
+    if len(cols) >= 4:
+        src_ctx = cols[-2]
+        # message remains cols[-1]
+    else:
+        # Try to split combined last column into "src : Alert: ..."
+        m_comb = re.match(r"^(?P<src>.+?):\s*(?P<msg>Alert:.*)$", message)
+        if m_comb:
+            src_ctx = m_comb.group("src").strip()
+            message = m_comb.group("msg").strip()
 
     # Find a time-like column earlier (ignore the first arbitrary token/word)
     log_time = ""
-    for c in cols[:-2]:
-        if TIME_RE.match(c):
-            log_time = c
+    limit = -2 if len(cols) >= 4 else -1
+    scan_cols = cols[:limit] if limit != 0 else []
+    for c in scan_cols:
+        if TIME_RE.match(c.strip()):
+            log_time = c.strip()
             break
 
     # Extract helpful context from source column
@@ -66,6 +80,12 @@ def parse_signal(fields: Iterable[str]) -> Optional[Dict[str, Any]]:
         src_name = m.group("src").strip()
         src_symbol = m.group("symbol").upper()
         src_tf = m.group("tf").upper()
+    else:
+        m2 = SRC_CTX_COMMA_RE.match(src_ctx)
+        if m2:
+            src_name = m2.group("src").strip()
+            src_symbol = m2.group("symbol").upper()
+            src_tf = m2.group("tf").upper()
 
     # Try known message formats
     m = ARROW_RE.match(message)

@@ -137,8 +137,13 @@ def emit_json(obj: Dict[str, Any], out_fp: Optional[io.TextIOBase]):
         out_fp.flush()
 
 
-def _open_text_utf16_shared(path: str):
-    """Open file for shared reading on Windows; normal open elsewhere."""
+LOG_ENCODING = os.environ.get('FX_LOG_ENCODING', '').strip() or None
+
+
+def _open_shared_text(path: str):
+    """Open file for shared reading on Windows with selectable encoding.
+    Encoding order: explicit FX_LOG_ENCODING, else 'utf-16' on Windows, else 'utf-16-le'.
+    """
     if os.name == 'nt' and ctypes is not None and msvcrt is not None:
         # CreateFileW with FILE_SHARE_READ|WRITE|DELETE to avoid lock issues
         GENERIC_READ = 0x80000000
@@ -161,11 +166,13 @@ def _open_text_utf16_shared(path: str):
             raise FileNotFoundError(path)
         fd = msvcrt.open_osfhandle(int(handle), os.O_RDONLY)
         raw = os.fdopen(fd, 'rb', buffering=0)
-        text = io.TextIOWrapper(raw, encoding="utf-16-le", errors="ignore")
+        enc = LOG_ENCODING or 'utf-16'
+        text = io.TextIOWrapper(raw, encoding=enc, errors="ignore")
         return raw, text
     # POSIX or fallback
     raw = open(path, "rb", buffering=0)
-    return raw, io.TextIOWrapper(raw, encoding="utf-16-le", errors="ignore")
+    enc = LOG_ENCODING or 'utf-16-le'
+    return raw, io.TextIOWrapper(raw, encoding=enc, errors="ignore")
 
 
 def follow_utf16(path: str, from_beginning: bool = False):
@@ -178,7 +185,7 @@ def follow_utf16(path: str, from_beginning: bool = False):
 
     def open_text():
         # Use shared read on Windows to avoid writer locks
-        return _open_text_utf16_shared(path)
+        return _open_shared_text(path)
 
     raw, text = open_text()
     try:

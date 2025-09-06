@@ -8,7 +8,6 @@ import os
 from typing import Optional, Dict, Any
 
 # Local signal parser/tailer
-import signal_monitor as sm
 
 def load_dotenv(path: str = ".env") -> None:
     """Minimal .env loader: KEY=VALUE per line, supports quotes and comments.
@@ -32,6 +31,9 @@ def load_dotenv(path: str = ".env") -> None:
 # Load .env before reading configuration
 load_dotenv()
 
+# Import after .env so signal monitor can read encoding overrides
+import signal_monitor as sm
+
 # Configuration (can be overridden by .env)
 PORT = int(os.environ.get("FX_MARKET_PORT", "12301"))
 LOG_PATH = os.environ.get("FX_LOG_PATH", "20250906.log")
@@ -42,6 +44,7 @@ ATR_PERIOD = int(os.environ.get("FX_ATR_PERIOD", "14"))
 ATR_MULT_SL = float(os.environ.get("FX_ATR_MULT_SL", "2.0"))
 ATR_MULT_TP = float(os.environ.get("FX_ATR_MULT_TP", "3.0"))
 DEBUG = os.environ.get("FX_DEBUG", "off").lower() in ("1","true","on","yes")
+TAIL_FROM_BEGINNING = os.environ.get("FX_TAIL_FROM_BEGINNING", "off").lower() in ("1","true","on","yes")
 SYMBOL_FILTER = None
 if os.environ.get("FX_SYMBOLS"):
     SYMBOL_FILTER = {s.strip().upper() for s in os.environ["FX_SYMBOLS"].split(',') if s.strip()}
@@ -88,9 +91,10 @@ def enqueue_from_signal(sig: Dict[str, Any]):
 
 
 def tail_log_and_enqueue():
-    print(f"Tailing log for signals: {LOG_PATH}")
+    enc = os.environ.get('FX_LOG_ENCODING') or ('utf-16' if os.name == 'nt' else 'utf-16-le')
+    print(f"Tailing log for signals: {LOG_PATH} (encoding={enc}, from_beginning={TAIL_FROM_BEGINNING})")
     try:
-        for raw_line in sm.follow_utf16(LOG_PATH, from_beginning=False):
+        for raw_line in sm.follow_utf16(LOG_PATH, from_beginning=TAIL_FROM_BEGINNING):
             if DEBUG:
                 print(f"[TAIL] {raw_line}")
             parts = raw_line.split("\t")

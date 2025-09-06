@@ -41,6 +41,7 @@ ATR_MODE = os.environ.get("FX_ATR_MODE", "on").lower() in ("1","true","on","yes"
 ATR_PERIOD = int(os.environ.get("FX_ATR_PERIOD", "14"))
 ATR_MULT_SL = float(os.environ.get("FX_ATR_MULT_SL", "2.0"))
 ATR_MULT_TP = float(os.environ.get("FX_ATR_MULT_TP", "3.0"))
+DEBUG = os.environ.get("FX_DEBUG", "off").lower() in ("1","true","on","yes")
 SYMBOL_FILTER = None
 if os.environ.get("FX_SYMBOLS"):
     SYMBOL_FILTER = {s.strip().upper() for s in os.environ["FX_SYMBOLS"].split(',') if s.strip()}
@@ -90,10 +91,19 @@ def tail_log_and_enqueue():
     print(f"Tailing log for signals: {LOG_PATH}")
     try:
         for raw_line in sm.follow_utf16(LOG_PATH, from_beginning=False):
+            if DEBUG:
+                print(f"[TAIL] {raw_line}")
             parts = raw_line.split("\t")
             sig = sm.parse_signal(parts)
             if not sig:
+                if DEBUG:
+                    print("[PARSE] no match")
                 continue
+            if DEBUG:
+                try:
+                    print(f"[PARSE] {json.dumps(sig, ensure_ascii=False)}")
+                except Exception:
+                    print(f"[PARSE] {sig}")
             enqueue_from_signal(sig)
     except Exception as e:
         print(f"Signal tailer error: {e}")

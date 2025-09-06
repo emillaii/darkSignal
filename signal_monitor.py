@@ -7,6 +7,13 @@ import re
 import sys
 import time
 from typing import Optional, Dict, Any, Iterable
+try:
+    # Windows-specific shared read helpers
+    import ctypes  # type: ignore
+    import msvcrt  # type: ignore
+except Exception:
+    ctypes = None  # type: ignore
+    msvcrt = None  # type: ignore
 
 
 # Message patterns
@@ -110,6 +117,37 @@ def emit_json(obj: Dict[str, Any], out_fp: Optional[io.TextIOBase]):
         out_fp.flush()
 
 
+def _open_text_utf16_shared(path: str):
+    """Open file for shared reading on Windows; normal open elsewhere."""
+    if os.name == 'nt' and ctypes is not None and msvcrt is not None:
+        # CreateFileW with FILE_SHARE_READ|WRITE|DELETE to avoid lock issues
+        GENERIC_READ = 0x80000000
+        FILE_SHARE_READ = 0x00000001
+        FILE_SHARE_WRITE = 0x00000002
+        FILE_SHARE_DELETE = 0x00000004
+        OPEN_EXISTING = 3
+        FILE_ATTRIBUTE_NORMAL = 0x80
+        INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+        CreateFileW = ctypes.windll.kernel32.CreateFileW
+        CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+                                ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                                ctypes.c_void_p]
+        CreateFileW.restype = ctypes.c_void_p
+
+        handle = CreateFileW(path, GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              None, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, None)
+        if handle == INVALID_HANDLE_VALUE:
+            raise FileNotFoundError(path)
+        fd = msvcrt.open_osfhandle(int(handle), os.O_RDONLY)
+        raw = os.fdopen(fd, 'rb', buffering=0)
+        text = io.TextIOWrapper(raw, encoding="utf-16-le", errors="ignore")
+        return raw, text
+    # POSIX or fallback
+    raw = open(path, "rb", buffering=0)
+    return raw, io.TextIOWrapper(raw, encoding="utf-16-le", errors="ignore")
+
+
 def follow_utf16(path: str, from_beginning: bool = False):
     """Generator yielding decoded lines as they are appended to a UTF-16 log.
 
@@ -119,9 +157,8 @@ def follow_utf16(path: str, from_beginning: bool = False):
     text = None
 
     def open_text():
-        raw = open(path, "rb")
-        # Use UTF-16LE to avoid BOM requirement and allow mid-file reads
-        return raw, io.TextIOWrapper(raw, encoding="utf-16-le")
+        # Use shared read on Windows to avoid writer locks
+        return _open_text_utf16_shared(path)
 
     raw, text = open_text()
     try:
@@ -131,7 +168,24 @@ def follow_utf16(path: str, from_beginning: bool = False):
 
         while True:
             # Read any available new lines
-            line = text.readline()
+            try:
+                line = text.readline()
+            except Exception:
+                # If reading fails due to rotation/locking, reopen
+                try:
+                    text.detach()
+                except Exception:
+                    pass
+                try:
+                    raw.close()
+                except Exception:
+                    pass
+                time.sleep(0.2)
+                raw, text = open_text()
+                if not from_beginning:
+                    text.seek(0, os.SEEK_END)
+                last_stat = None
+                continue
             if line:
                 yield line.rstrip("\r\n")
                 continue

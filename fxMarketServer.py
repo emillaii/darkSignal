@@ -45,6 +45,100 @@ ATR_MULT_SL = float(os.environ.get("FX_ATR_MULT_SL", "2.0"))
 ATR_MULT_TP = float(os.environ.get("FX_ATR_MULT_TP", "3.0"))
 DEBUG = os.environ.get("FX_DEBUG", "off").lower() in ("1","true","on","yes")
 TAIL_FROM_BEGINNING = os.environ.get("FX_TAIL_FROM_BEGINNING", "off").lower() in ("1","true","on","yes")
+PROBE_ON_START = os.environ.get("FX_PROBE_ON_START", "on").lower() in ("1","true","on","yes")
+TAIL_VIA_COMMAND = os.environ.get("FX_TAIL_VIA_COMMAND", "off").lower() in ("1","true","on","yes")
+TAIL_CMD = os.environ.get("FX_TAIL_CMD", "").strip() or None
+
+
+def probe_file(path: str):
+    try:
+        exists = os.path.exists(path)
+        print(f"[PROBE] exists={exists}")
+        if not exists:
+            return
+        st = os.stat(path)
+        print(f"[PROBE] size={st.st_size} mtime={st.st_mtime}")
+        # Try shared open via signal_monitor
+        try:
+            raw, text = sm._open_shared_text(path)  # type: ignore[attr-defined]
+            try:
+                # Peek raw
+                head = raw.read(64)
+                print("[PROBE] raw head:", head[:64].hex(' '))
+                # Reset and read first line decoded
+                raw.seek(0)
+                line = text.readline()
+                print("[PROBE] decoded first line:", repr(line))
+            finally:
+                try:
+                    text.detach()
+                except Exception:
+                    pass
+                try:
+                    raw.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[PROBE] shared-open failed: {e}")
+    except Exception as e:
+        print(f"[PROBE] error: {e}")
+
+
+def _ps_encoding_for(enc: str) -> str:
+    enc_l = enc.lower()
+    if enc_l in ("utf-8", "utf8", "utf-8-sig", "utf8sig"):
+        return "UTF8"
+    if enc_l in ("utf-16", "utf16", "utf-16-le", "utf16le"):
+        return "Unicode"
+    if enc_l in ("utf-16-be", "utf16be"):
+        return "BigEndianUnicode"
+    if enc_l in ("mbcs", "ansi", "oem"):
+        return "OEM"
+    # Fallback to Default (Windows current code page)
+    return "Default"
+
+
+def iter_tail_lines_command(path: str, log_enc: str):
+    import subprocess, time
+    ps_enc = _ps_encoding_for(log_enc)
+    while True:
+        try:
+            if TAIL_CMD:
+                cmd = TAIL_CMD
+            else:
+                # Force UTF-8 stdout so Python decodes reliably
+                lit = path.replace("'", "''")
+                cmd = (
+                    f"[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
+                    f"Get-Content -LiteralPath '{lit}' -Tail 0 -Wait -Encoding {ps_enc}"
+                )
+            args = [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy","Bypass",
+                "-Command",
+                cmd,
+            ]
+            if DEBUG:
+                print(f"[TAILCMD] {' '.join(args)}")
+            proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    bufsize=1, text=True, encoding="utf-8", errors="ignore")
+            # Stream lines
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                yield line.rstrip("\r\n")
+            rc = proc.wait()
+            if DEBUG:
+                err = b""
+                try:
+                    err = proc.stderr.read() if proc.stderr else b""
+                except Exception:
+                    pass
+                print(f"[TAILCMD] exited rc={rc} err={err}")
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"[TAILCMD] error: {e}")
+            time.sleep(1.0)
 SYMBOL_FILTER = None
 if os.environ.get("FX_SYMBOLS"):
     SYMBOL_FILTER = {s.strip().upper() for s in os.environ["FX_SYMBOLS"].split(',') if s.strip()}
@@ -92,9 +186,17 @@ def enqueue_from_signal(sig: Dict[str, Any]):
 
 def tail_log_and_enqueue():
     enc = os.environ.get('FX_LOG_ENCODING') or ('utf-16' if os.name == 'nt' else 'utf-16-le')
-    print(f"Tailing log for signals: {LOG_PATH} (encoding={enc}, from_beginning={TAIL_FROM_BEGINNING})")
+    mode = 'command' if TAIL_VIA_COMMAND else 'native'
+    print(f"Tailing log for signals: {LOG_PATH} (encoding={enc}, from_beginning={TAIL_FROM_BEGINNING}, mode={mode})")
+    if PROBE_ON_START:
+        probe_file(LOG_PATH)
     try:
-        for raw_line in sm.follow_utf16(LOG_PATH, from_beginning=TAIL_FROM_BEGINNING):
+        line_iter = (
+            iter_tail_lines_command(LOG_PATH, enc)
+            if TAIL_VIA_COMMAND else
+            sm.follow_utf16(LOG_PATH, from_beginning=TAIL_FROM_BEGINNING)
+        )
+        for raw_line in line_iter:
             if DEBUG:
                 print(f"[TAIL] {raw_line}")
             parts = raw_line.split("\t")

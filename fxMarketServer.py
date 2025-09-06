@@ -10,7 +10,29 @@ from typing import Optional, Dict, Any
 # Local signal parser/tailer
 import signal_monitor as sm
 
-# Configuration
+def load_dotenv(path: str = ".env") -> None:
+    """Minimal .env loader: KEY=VALUE per line, supports quotes and comments.
+    Does not overwrite existing env values.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' not in line:
+                    continue
+                key, val = line.split('=', 1)
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                os.environ.setdefault(key, val)
+    except FileNotFoundError:
+        pass
+
+# Load .env before reading configuration
+load_dotenv()
+
+# Configuration (can be overridden by .env)
 PORT = int(os.environ.get("FX_MARKET_PORT", "12301"))
 LOG_PATH = os.environ.get("FX_LOG_PATH", "20250906.log")
 DEFAULT_VOLUME = float(os.environ.get("FX_DEFAULT_VOLUME", "0.01"))

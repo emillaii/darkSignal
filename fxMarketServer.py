@@ -5,6 +5,7 @@ import threading
 import queue
 import time
 import os
+from datetime import datetime
 from typing import Optional, Dict, Any
 
 # Local signal parser/tailer
@@ -37,6 +38,8 @@ import signal_monitor as sm
 # Configuration (can be overridden by .env)
 PORT = int(os.environ.get("FX_MARKET_PORT", "12301"))
 LOG_PATH = os.environ.get("FX_LOG_PATH", "20250906.log")
+LOG_DIR = os.environ.get("FX_LOG_DIR", "").strip() or None
+LOG_PATH_TEMPLATE = os.environ.get("FX_LOG_PATH_TEMPLATE", "{YYYYMMDD}.log")
 DEFAULT_VOLUME = float(os.environ.get("FX_DEFAULT_VOLUME", "0.01"))
 MAGIC_NUMBER = int(os.environ.get("FX_MAGIC_NUMBER", "987654"))
 ATR_MODE = os.environ.get("FX_ATR_MODE", "on").lower() in ("1","true","on","yes")
@@ -48,6 +51,9 @@ TAIL_FROM_BEGINNING = os.environ.get("FX_TAIL_FROM_BEGINNING", "off").lower() in
 PROBE_ON_START = os.environ.get("FX_PROBE_ON_START", "on").lower() in ("1","true","on","yes")
 TAIL_VIA_COMMAND = os.environ.get("FX_TAIL_VIA_COMMAND", "off").lower() in ("1","true","on","yes")
 TAIL_CMD = os.environ.get("FX_TAIL_CMD", "").strip() or None
+AUTO_ROLLOVER = os.environ.get("FX_AUTO_ROLLOVER", "on").lower() in ("1","true","on","yes")
+ROLLOVER_CHECK_SECS = float(os.environ.get("FX_ROLLOVER_CHECK_SECS", "15"))
+ROLLOVER_FROM_BEGINNING = os.environ.get("FX_ROLLOVER_FROM_BEGINNING", "off").lower() in ("1","true","on","yes")
 
 
 def probe_file(path: str):
@@ -82,6 +88,110 @@ def probe_file(path: str):
             print(f"[PROBE] shared-open failed: {e}")
     except Exception as e:
         print(f"[PROBE] error: {e}")
+
+
+def resolve_log_path() -> str:
+    """Resolve the actual log path to tail, supporting templates and directories.
+
+    Precedence:
+    1) If LOG_PATH contains {YYYYMMDD} or %Y%m%d, substitute today's date.
+    2) If LOG_PATH points to a directory, join with today's YYYYMMDD.log.
+    3) If LOG_DIR is set, join with today's YYYYMMDD.log.
+    4) Else, use LOG_PATH as-is.
+    """
+    today = datetime.now().strftime('%Y%m%d')
+    # 1) Template substitution
+    if ('{YYYYMMDD}' in LOG_PATH) or ('%Y%m%d' in LOG_PATH):
+        p = LOG_PATH.replace('{YYYYMMDD}', today).replace('%Y%m%d', today)
+        return p
+    # 2) If LOG_PATH is a directory
+    try:
+        if LOG_PATH and os.path.isdir(LOG_PATH):
+            return os.path.join(LOG_PATH, f"{today}.log")
+    except Exception:
+        pass
+    # 3) LOG_DIR
+    if LOG_DIR:
+        return os.path.join(LOG_DIR, f"{today}.log")
+    # 4) As-is
+    return LOG_PATH
+
+
+def iter_tail_lines_native(enc: str, from_beginning: bool):
+    """Tail lines using shared-open and support daily rollover to new file.
+
+    If AUTO_ROLLOVER is enabled and resolve_log_path() changes to a new
+    existing file, switches the tail to that path.
+    """
+    import time as _time
+
+    current_path = resolve_log_path()
+    last_check = _time.time()
+    def _open_at_start(path: str, start_from_beginning: bool):
+        raw, text = sm._open_shared_text(path)  # type: ignore[attr-defined]
+        if not start_from_beginning:
+            try:
+                text.seek(0, os.SEEK_END)
+            except Exception:
+                pass
+        return raw, text
+
+    raw = text = None
+    try:
+        raw, text = _open_at_start(current_path, from_beginning)
+        while True:
+            # Try read next line
+            try:
+                line = text.readline()
+            except Exception:
+                # Reopen same path on transient errors
+                try:
+                    text.detach()
+                except Exception:
+                    pass
+                try:
+                    raw.close()
+                except Exception:
+                    pass
+                _time.sleep(0.2)
+                raw, text = _open_at_start(current_path, False)
+                continue
+
+            if line:
+                yield line.rstrip("\r\n")
+                continue
+
+            # No new line, consider rollover
+            now = _time.time()
+            if AUTO_ROLLOVER and (now - last_check) >= ROLLOVER_CHECK_SECS:
+                last_check = now
+                new_path = resolve_log_path()
+                if new_path != current_path and os.path.exists(new_path):
+                    if DEBUG:
+                        print(f"[ROLLOVER] switching from {current_path} to {new_path}")
+                    # swap to new file
+                    try:
+                        text.detach()
+                    except Exception:
+                        pass
+                    try:
+                        raw.close()
+                    except Exception:
+                        pass
+                    current_path = new_path
+                    raw, text = _open_at_start(current_path, ROLLOVER_FROM_BEGINNING)
+                    continue
+
+            _time.sleep(0.2)
+    finally:
+        try:
+            text.detach()  # type: ignore
+        except Exception:
+            pass
+        try:
+            raw.close()  # type: ignore
+        except Exception:
+            pass
 
 
 def _ps_encoding_for(enc: str) -> str:
@@ -187,15 +297,15 @@ def enqueue_from_signal(sig: Dict[str, Any]):
 def tail_log_and_enqueue():
     enc = os.environ.get('FX_LOG_ENCODING') or ('utf-16' if os.name == 'nt' else 'utf-16-le')
     mode = 'command' if TAIL_VIA_COMMAND else 'native'
-    print(f"Tailing log for signals: {LOG_PATH} (encoding={enc}, from_beginning={TAIL_FROM_BEGINNING}, mode={mode})")
+    resolved_path = resolve_log_path()
+    print(f"Tailing log for signals: {resolved_path} (encoding={enc}, from_beginning={TAIL_FROM_BEGINNING}, mode={mode})")
     if PROBE_ON_START:
-        probe_file(LOG_PATH)
+        probe_file(resolved_path)
     try:
-        line_iter = (
-            iter_tail_lines_command(LOG_PATH, enc)
-            if TAIL_VIA_COMMAND else
-            sm.follow_utf16(LOG_PATH, from_beginning=TAIL_FROM_BEGINNING)
-        )
+        if TAIL_VIA_COMMAND:
+            line_iter = iter_tail_lines_command(resolved_path, enc)
+        else:
+            line_iter = iter_tail_lines_native(enc, TAIL_FROM_BEGINNING)
         for raw_line in line_iter:
             if DEBUG:
                 print(f"[TAIL] {raw_line}")

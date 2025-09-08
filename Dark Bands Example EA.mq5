@@ -8,6 +8,9 @@
 
 // Indicator handle
 int g_indicator_handle = INVALID_HANDLE;
+// Trading helper
+#include <Trade/Trade.mqh>
+CTrade trade;
 
 //--- Inputs
 input string         InpIndicatorPath   = "Market\\Dark Bands MT5"; // Indicator path (MQL5/Indicators)
@@ -87,6 +90,22 @@ input bool           CustomChart        = true; // last indicator input before b
 // Draw trade signals
 input bool           DrawSignals        = true;                                         // Draw Buy/Sell arrows when present
 
+// Trading settings
+input bool           EnableTrading      = false;                                        // Enable live trading
+input double         Lots               = 0.10;                                         // Order volume
+input int            DeviationPoints    = 20;                                           // Max slippage (points)
+input long           MagicNumber        = 86015001;                                     // Magic number
+input bool           StrictTPValidation = false;                                        // If true, skip orders when TP/SL invalid
+input bool           AutoAdjustStops    = true;                                         // If true, adjust TP/SL to meet broker min
+input bool           DebugTradingLogs   = false;                                        // Extra logs for trading decisions
+// Logging controls
+input bool           VerboseTPSLSourceLogs = false;                                     // Print TP/SL source object/buffer logs
+input bool           PreserveStopsRelative = true;                                      // Shift all SLs to keep spacing when constrained
+
+// Internal state to avoid duplicate orders per bar
+datetime g_last_buy_bar_time = 0;
+datetime g_last_sell_bar_time = 0;
+
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
@@ -94,6 +113,8 @@ int OnInit()
 {
    // Create the custom indicator handle (MT5 requires CopyBuffer afterwards)
    ResetLastError();
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(DeviationPoints);
    g_indicator_handle = iCustom(
       _Symbol,
       InpTimeframe,
@@ -179,6 +200,8 @@ void OnTick()
    double val_lo[1];
    double val_buy[1];
    double val_sell[1];
+   double buy_edge[2];   // [0]=current bar, [1]=prev bar
+   double sell_edge[2];  // [0]=current bar, [1]=prev bar
    double upper = EMPTY_VALUE;
    double lower = EMPTY_VALUE;
    double buy   = EMPTY_VALUE;
@@ -188,6 +211,8 @@ void OnTick()
    int copied_lo = CopyBuffer(g_indicator_handle, InpLowerBufferIndex, InpShift, 1, val_lo);
    int copied_buy = CopyBuffer(g_indicator_handle, InpBuyBufferIndex, InpShift, 1, val_buy);
    int copied_sell= CopyBuffer(g_indicator_handle, InpSellBufferIndex, InpShift, 1, val_sell);
+   int edge_buy   = CopyBuffer(g_indicator_handle, InpBuyBufferIndex, 0, 2, buy_edge);
+   int edge_sell  = CopyBuffer(g_indicator_handle, InpSellBufferIndex, 0, 2, sell_edge);
 
    if(copied_up <= 0)
    {
@@ -212,6 +237,12 @@ void OnTick()
    }
 
    string comment_text = "";
+   // Compute rising-edge triggers on current bar: from 0.0 -> >0.0
+   bool buy_trigger=false, sell_trigger=false;
+   if(edge_buy==2)
+      buy_trigger  = (buy_edge[0] > 0.0) && (buy_edge[1] <= 0.0 || buy_edge[1] == EMPTY_VALUE);
+   if(edge_sell==2)
+      sell_trigger = (sell_edge[0] > 0.0) && (sell_edge[1] <= 0.0 || sell_edge[1] == EMPTY_VALUE);
    if(copied_up > 0 || copied_lo > 0 || copied_buy > 0 || copied_sell > 0)
    {
       upper = (copied_up > 0) ? val_up[0] : EMPTY_VALUE;
@@ -263,13 +294,16 @@ void OnTick()
       if(tp1==EMPTY_VALUE) tp1 = lt1;
       if(tp2==EMPTY_VALUE) tp2 = lt2;
       if(tp3==EMPTY_VALUE) tp3 = lt3;
-      // Append object source names to comment/log
-      if(lt1!=EMPTY_VALUE && !tp1_from_buf) Print("TP1 from object: ", ln1);
-      if(lt2!=EMPTY_VALUE && !tp2_from_buf) Print("TP2 from object: ", ln2);
-      if(lt3!=EMPTY_VALUE && !tp3_from_buf) Print("TP3 from object: ", ln3);
-      if(tp1_from_buf) Print("TP1 from buffer index ", InpTP1BufferIndex);
-      if(tp2_from_buf) Print("TP2 from buffer index ", InpTP2BufferIndex);
-      if(tp3_from_buf) Print("TP3 from buffer index ", InpTP3BufferIndex);
+      // Append object source names to log (optional)
+      if(VerboseTPSLSourceLogs)
+      {
+         if(lt1!=EMPTY_VALUE && !tp1_from_buf) Print("TP1 from object: ", ln1);
+         if(lt2!=EMPTY_VALUE && !tp2_from_buf) Print("TP2 from object: ", ln2);
+         if(lt3!=EMPTY_VALUE && !tp3_from_buf) Print("TP3 from object: ", ln3);
+         if(tp1_from_buf) Print("TP1 from buffer index ", InpTP1BufferIndex);
+         if(tp2_from_buf) Print("TP2 from buffer index ", InpTP2BufferIndex);
+         if(tp3_from_buf) Print("TP3 from buffer index ", InpTP3BufferIndex);
+      }
    }
 
    // Log TP levels when any are found
@@ -314,12 +348,15 @@ void OnTick()
       if(sl1==EMPTY_VALUE) sl1 = ls1;
       if(sl2==EMPTY_VALUE) sl2 = ls2;
       if(sl3==EMPTY_VALUE) sl3 = ls3;
-      if(ls1!=EMPTY_VALUE && !sl1_from_buf) Print("SL1 from object: ", lnS1);
-      if(ls2!=EMPTY_VALUE && !sl2_from_buf) Print("SL2 from object: ", lnS2);
-      if(ls3!=EMPTY_VALUE && !sl3_from_buf) Print("SL3 from object: ", lnS3);
-      if(sl1_from_buf) Print("SL1 from buffer index ", InpSL1BufferIndex);
-      if(sl2_from_buf) Print("SL2 from buffer index ", InpSL2BufferIndex);
-      if(sl3_from_buf) Print("SL3 from buffer index ", InpSL3BufferIndex);
+      if(VerboseTPSLSourceLogs)
+      {
+         if(ls1!=EMPTY_VALUE && !sl1_from_buf) Print("SL1 from object: ", lnS1);
+         if(ls2!=EMPTY_VALUE && !sl2_from_buf) Print("SL2 from object: ", lnS2);
+         if(ls3!=EMPTY_VALUE && !sl3_from_buf) Print("SL3 from object: ", lnS3);
+         if(sl1_from_buf) Print("SL1 from buffer index ", InpSL1BufferIndex);
+         if(sl2_from_buf) Print("SL2 from buffer index ", InpSL2BufferIndex);
+         if(sl3_from_buf) Print("SL3 from buffer index ", InpSL3BufferIndex);
+      }
    }
 
    if(sl1!=EMPTY_VALUE || sl2!=EMPTY_VALUE || sl3!=EMPTY_VALUE)
@@ -335,11 +372,17 @@ void OnTick()
    if(StringLen(comment_text)>0)
       UpdateInfoLabel(comment_text);
    else
-      UpdateInfoLabel("");
+   {
+      string tf = EnumToString(InpTimeframe);
+      UpdateInfoLabel(StringFormat("%s %s\nWaiting for indicator data...", _Symbol, tf));
+   }
 
    // Draw a single point (arrow) at the band levels for the selected bar
    datetime bt[];
-   if(CopyTime(_Symbol, InpTimeframe, InpShift, 1, bt) > 0)
+   datetime bt_curr[];
+   bool have_bt_shift = (CopyTime(_Symbol, InpTimeframe, InpShift, 1, bt) > 0);
+   bool have_bt_curr  = (CopyTime(_Symbol, InpTimeframe, 0,        1, bt_curr) > 0);
+   if(have_bt_shift)
    {
       // Use unique names per bar time so historical points remain
       string suffix = IntegerToString((long)bt[0]);
@@ -388,6 +431,78 @@ void OnTick()
             ObjectSetInteger(0, sell_p, OBJPROP_BACK, false);
          }
       }
+      // Place market orders per TP/SL set once per signal bar using rising-edge trigger
+      if(EnableTrading && have_bt_curr)
+      {
+         string tstamp = TimeToString(bt_curr[0], TIME_DATE|TIME_MINUTES);
+         double ask = 0, bid = 0;
+         SymbolInfoDouble(_Symbol, SYMBOL_ASK, ask);
+         SymbolInfoDouble(_Symbol, SYMBOL_BID, bid);
+         // Compute broker constraints
+         double point=0, tick_size=0; long stops_level=0; int digits=(int)_Digits;
+         SymbolInfoDouble(_Symbol, SYMBOL_POINT, point);
+         SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE, tick_size);
+         if(tick_size<=0) tick_size=point;
+         SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL, stops_level);
+         double min_dist = stops_level * point;
+         // Snap helper moved to function SnapPrice()
+
+         // Optionally shift SLs together to preserve spacing when all are under/over constraint
+         double adj_sl1=sl1, adj_sl2=sl2, adj_sl3=sl3;
+         if(AutoAdjustStops && PreserveStopsRelative)
+         {
+            // For BUY: SL must be <= bid - min_dist
+            if(buy_trigger)
+            {
+               double maxAllowedSL = bid - min_dist;
+               // Compute max of provided SLs
+               double maxSL = -1.0e100; bool any=false;
+               if(adj_sl1!=EMPTY_VALUE){ maxSL = MathMax(maxSL, adj_sl1); any=true; }
+               if(adj_sl2!=EMPTY_VALUE){ maxSL = MathMax(maxSL, adj_sl2); any=true; }
+               if(adj_sl3!=EMPTY_VALUE){ maxSL = MathMax(maxSL, adj_sl3); any=true; }
+               if(any && maxSL > maxAllowedSL)
+               {
+                  double shift = maxSL - maxAllowedSL + tick_size; // push down
+                  if(adj_sl1!=EMPTY_VALUE) adj_sl1 = SnapPrice(adj_sl1 - shift, tick_size, digits);
+                  if(adj_sl2!=EMPTY_VALUE) adj_sl2 = SnapPrice(adj_sl2 - shift, tick_size, digits);
+                  if(adj_sl3!=EMPTY_VALUE) adj_sl3 = SnapPrice(adj_sl3 - shift, tick_size, digits);
+               }
+            }
+            // For SELL: SL must be >= ask + min_dist
+            if(sell_trigger)
+            {
+               double minAllowedSL = ask + min_dist;
+               // Compute max of provided SLs (closest to validity boundary)
+               double maxSL = -1.0e100; bool any=false;
+               if(adj_sl1!=EMPTY_VALUE){ maxSL = MathMax(maxSL, adj_sl1); any=true; }
+               if(adj_sl2!=EMPTY_VALUE){ maxSL = MathMax(maxSL, adj_sl2); any=true; }
+               if(adj_sl3!=EMPTY_VALUE){ maxSL = MathMax(maxSL, adj_sl3); any=true; }
+               if(any && maxSL < minAllowedSL)
+               {
+                  double shift = minAllowedSL - maxSL; // push up
+                  if(adj_sl1!=EMPTY_VALUE) adj_sl1 = SnapPrice(adj_sl1 + shift, tick_size, digits);
+                  if(adj_sl2!=EMPTY_VALUE) adj_sl2 = SnapPrice(adj_sl2 + shift, tick_size, digits);
+                  if(adj_sl3!=EMPTY_VALUE) adj_sl3 = SnapPrice(adj_sl3 + shift, tick_size, digits);
+               }
+            }
+         }
+         // BUY side
+         if(buy_trigger && bt_curr[0] != g_last_buy_bar_time)
+         {
+            if(tp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, ask, tp1, adj_sl1, StringFormat("TP1 %s", tstamp));
+            if(tp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, ask, tp2, adj_sl2, StringFormat("TP2 %s", tstamp));
+            if(tp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, ask, tp3, adj_sl3, StringFormat("TP3 %s", tstamp));
+            g_last_buy_bar_time = bt_curr[0];
+         }
+         // SELL side
+         if(sell_trigger && bt_curr[0] != g_last_sell_bar_time)
+         {
+            if(tp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, bid, tp1, adj_sl1, StringFormat("TP1 %s", tstamp));
+            if(tp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, bid, tp2, adj_sl2, StringFormat("TP2 %s", tstamp));
+            if(tp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, bid, tp3, adj_sl3, StringFormat("TP3 %s", tstamp));
+            g_last_sell_bar_time = bt_curr[0];
+         }
+      }
       ChartRedraw();
    }
 }
@@ -400,7 +515,7 @@ void UpdateInfoLabel(const string text)
    string name = "DarkBands_InfoLabel";
    if(ObjectFind(0, name) < 0)
    {
-      ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+      ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
    }
    ObjectSetInteger(0, name, OBJPROP_CORNER, InfoCorner);
    ObjectSetInteger(0, name, OBJPROP_XDISTANCE, InfoX);
@@ -411,9 +526,90 @@ void UpdateInfoLabel(const string text)
    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InfoFontSize);
    ObjectSetString (0, name, OBJPROP_FONT, "Arial");
    ObjectSetInteger(0, name, OBJPROP_COLOR, InfoTextColor);
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, InfoBgColor);
    ObjectSetString (0, name, OBJPROP_TEXT, text);
    ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Helper: place a market order with validation                    |
+//+------------------------------------------------------------------+
+double SnapPrice(const double price, const double tick_size, const int digits)
+{
+   if(tick_size<=0.0)
+      return NormalizeDouble(price, digits);
+   double snapped = MathRound(price/tick_size)*tick_size;
+   return NormalizeDouble(snapped, digits);
+}
+
+//+------------------------------------------------------------------+
+//| Helper: place a market order with validation                    |
+//+------------------------------------------------------------------+
+bool TryPlaceOrder(ENUM_ORDER_TYPE type, double mkt_price, double tp, double sl, const string note)
+{
+   // Normalize prices
+   int digits = (int)_Digits;
+   double ntp = NormalizeDouble(tp, digits);
+   double nsl = NormalizeDouble(sl, digits);
+
+   double ask=0, bid=0;
+   SymbolInfoDouble(_Symbol, SYMBOL_ASK, ask);
+   SymbolInfoDouble(_Symbol, SYMBOL_BID, bid);
+   double point=0, tick_size=0; long stops_level=0;
+   SymbolInfoDouble(_Symbol, SYMBOL_POINT, point);
+   SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL, stops_level);
+   SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE, tick_size);
+   if(tick_size<=0) tick_size=point;
+   double min_dist = stops_level * point;
+
+   if(type==ORDER_TYPE_BUY)
+   {
+      // Validate and optionally adjust
+      if(!(ntp>ask && nsl<ask))
+      {
+         if(DebugTradingLogs) Print("BUY validation failed: tp<=ask or sl>=ask (tp=",ntp,", sl=",nsl,", ask=",ask,")");
+         if(StrictTPValidation) return false;
+      }
+      if(AutoAdjustStops)
+      {
+         if(ntp <= ask + min_dist) ntp = NormalizeDouble(ask + min_dist, digits);
+         if(nsl >= bid - min_dist) nsl = NormalizeDouble(bid - min_dist, digits);
+         // snap to tick size
+         ntp = MathRound(ntp/tick_size)*tick_size;
+         nsl = MathRound(nsl/tick_size)*tick_size;
+      }
+      bool ok = trade.Buy(Lots, _Symbol, 0.0, nsl, ntp, note);
+      if(DebugTradingLogs)
+      {
+         Print("Buy attempt: lots=", Lots, " sl=", nsl, " tp=", ntp, " ret=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
+      }
+      if(!ok) Print("Buy failed: ", _LastError);
+      else    Print("Buy opened: ", Lots, " TP=", ntp, " SL=", nsl, " ", note);
+      return ok;
+   }
+   else if(type==ORDER_TYPE_SELL)
+   {
+      if(!(ntp<bid && nsl>bid))
+      {
+         if(DebugTradingLogs) Print("SELL validation failed: tp>=bid or sl<=bid (tp=",ntp,", sl=",nsl,", bid=",bid,")");
+         if(StrictTPValidation) return false;
+      }
+      if(AutoAdjustStops)
+      {
+         if(ntp >= bid - min_dist) ntp = NormalizeDouble(bid - min_dist, digits);
+         if(nsl <= ask + min_dist) nsl = NormalizeDouble(ask + min_dist, digits);
+         ntp = MathRound(ntp/tick_size)*tick_size;
+         nsl = MathRound(nsl/tick_size)*tick_size;
+      }
+      bool ok = trade.Sell(Lots, _Symbol, 0.0, nsl, ntp, note);
+      if(DebugTradingLogs)
+      {
+         Print("Sell attempt: lots=", Lots, " sl=", nsl, " tp=", ntp, " ret=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
+      }
+      if(!ok) Print("Sell failed: ", _LastError);
+      else    Print("Sell opened: ", Lots, " TP=", ntp, " SL=", nsl, " ", note);
+      return ok;
+   }
+   return false;
 }
 
 //+------------------------------------------------------------------+

@@ -101,6 +101,7 @@ input bool           DebugTradingLogs   = false;                                
 // Logging controls
 input bool           VerboseTPSLSourceLogs = false;                                     // Print TP/SL source object/buffer logs
 input bool           PreserveStopsRelative = true;                                      // Shift all SLs to keep spacing when constrained
+input bool           ReverseDirection   = false;                                        // Reverse Buy/Sell and swap TP/SL
 
 // Internal state to avoid duplicate orders per bar
 datetime g_last_buy_bar_time = 0;
@@ -243,6 +244,10 @@ void OnTick()
       buy_trigger  = (buy_edge[0] > 0.0) && (buy_edge[1] <= 0.0 || buy_edge[1] == EMPTY_VALUE);
    if(edge_sell==2)
       sell_trigger = (sell_edge[0] > 0.0) && (sell_edge[1] <= 0.0 || sell_edge[1] == EMPTY_VALUE);
+
+   // Apply optional reversal: swap triggers
+   bool eff_buy_trigger  = ReverseDirection ? sell_trigger : buy_trigger;
+   bool eff_sell_trigger = ReverseDirection ? buy_trigger  : sell_trigger;
    if(copied_up > 0 || copied_lo > 0 || copied_buy > 0 || copied_sell > 0)
    {
       upper = (copied_up > 0) ? val_up[0] : EMPTY_VALUE;
@@ -448,11 +453,20 @@ void OnTick()
          // Snap helper moved to function SnapPrice()
 
          // Optionally shift SLs together to preserve spacing when all are under/over constraint
-         double adj_sl1=sl1, adj_sl2=sl2, adj_sl3=sl3;
+         // Swap TP/SL if reversing
+         double rtp1=tp1, rtp2=tp2, rtp3=tp3;
+         double rsl1=sl1, rsl2=sl2, rsl3=sl3;
+         if(ReverseDirection)
+         {
+            rtp1 = sl1; rtp2 = sl2; rtp3 = sl3;
+            rsl1 = tp1; rsl2 = tp2; rsl3 = tp3;
+         }
+
+         double adj_sl1=rsl1, adj_sl2=rsl2, adj_sl3=rsl3;
          if(AutoAdjustStops && PreserveStopsRelative)
          {
             // For BUY: SL must be <= bid - min_dist
-            if(buy_trigger)
+            if(eff_buy_trigger)
             {
                double maxAllowedSL = bid - min_dist;
                // Compute max of provided SLs
@@ -469,7 +483,7 @@ void OnTick()
                }
             }
             // For SELL: SL must be >= ask + min_dist
-            if(sell_trigger)
+            if(eff_sell_trigger)
             {
                double minAllowedSL = ask + min_dist;
                // Compute max of provided SLs (closest to validity boundary)
@@ -487,19 +501,19 @@ void OnTick()
             }
          }
          // BUY side
-         if(buy_trigger && bt_curr[0] != g_last_buy_bar_time)
+         if(eff_buy_trigger && bt_curr[0] != g_last_buy_bar_time)
          {
-            if(tp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, ask, tp1, adj_sl1, StringFormat("TP1 %s", tstamp));
-            if(tp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, ask, tp2, adj_sl2, StringFormat("TP2 %s", tstamp));
-            if(tp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, ask, tp3, adj_sl3, StringFormat("TP3 %s", tstamp));
+            if(rtp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, ask, rtp1, adj_sl1, StringFormat("TP1 %s", tstamp));
+            if(rtp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, ask, rtp2, adj_sl2, StringFormat("TP2 %s", tstamp));
+            if(rtp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, ask, rtp3, adj_sl3, StringFormat("TP3 %s", tstamp));
             g_last_buy_bar_time = bt_curr[0];
          }
          // SELL side
-         if(sell_trigger && bt_curr[0] != g_last_sell_bar_time)
+         if(eff_sell_trigger && bt_curr[0] != g_last_sell_bar_time)
          {
-            if(tp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, bid, tp1, adj_sl1, StringFormat("TP1 %s", tstamp));
-            if(tp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, bid, tp2, adj_sl2, StringFormat("TP2 %s", tstamp));
-            if(tp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, bid, tp3, adj_sl3, StringFormat("TP3 %s", tstamp));
+            if(rtp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, bid, rtp1, adj_sl1, StringFormat("TP1 %s", tstamp));
+            if(rtp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, bid, rtp2, adj_sl2, StringFormat("TP2 %s", tstamp));
+            if(rtp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, bid, rtp3, adj_sl3, StringFormat("TP3 %s", tstamp));
             g_last_sell_bar_time = bt_curr[0];
          }
       }

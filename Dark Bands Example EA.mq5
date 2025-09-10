@@ -91,8 +91,20 @@ input bool           CustomChart        = true; // last indicator input before b
 input bool           DrawSignals        = true;                                         // Draw Buy/Sell arrows when present
 
 // Trading settings
+// Order sizing selection
+enum ENUM_ORDER_SIZING_MODE { ORDER_MODE_FIXED = 0, ORDER_MODE_PERCENT = 1 };
 input bool           EnableTrading      = false;                                        // Enable live trading
 input double         Lots               = 0.10;                                         // Order volume
+// Order sizing mode as dropdown: Fixed or Percent-of-balance
+input ENUM_ORDER_SIZING_MODE OrderMode = ORDER_MODE_FIXED;                              // Fixed or Percent
+input double         PercentOfBalance   = 1.0;                                           // Default risk % of balance (loss at SL)
+input double         PercentOfBalance_SL1 = 0.0;                                         // SL1 risk % (0 = use default)
+input double         PercentOfBalance_SL2 = 0.0;                                         // SL2 risk % (0 = use default)
+input double         PercentOfBalance_SL3 = 0.0;                                         // SL3 risk % (0 = use default)
+// Per-TP lot sizes (0 = use `Lots`)
+input double         lotSize_TP1        = 0.0;                                          // Volume for TP1 orders
+input double         lotSize_TP2        = 0.0;                                          // Volume for TP2 orders
+input double         lotSize_TP3        = 0.0;                                          // Volume for TP3 orders
 input int            DeviationPoints    = 20;                                           // Max slippage (points)
 input long           MagicNumber        = 86015001;                                     // Magic number
 input bool           StrictTPValidation = false;                                        // If true, skip orders when TP/SL invalid
@@ -162,11 +174,13 @@ int OnInit()
    if(g_indicator_handle == INVALID_HANDLE)
    {
       int err = GetLastError();
-      Print("Failed to create indicator handle. Error: ", err,
-            ". Ensure MT5 version exists at MQL5/Indicators/", InpIndicatorPath);
+      if(DebugTradingLogs)
+         Print("Failed to create indicator handle. Error: ", err,
+               ". Ensure MT5 version exists at MQL5/Indicators/", InpIndicatorPath);
       return INIT_FAILED;
    }
-   Print("Indicator handle created: ", g_indicator_handle);
+   if(DebugTradingLogs)
+      Print("Indicator handle created: ", g_indicator_handle);
    return(INIT_SUCCEEDED);
 }
 
@@ -218,23 +232,27 @@ void OnTick()
    if(copied_up <= 0)
    {
       int err = GetLastError();
-      Print("CopyBuffer failed for Upper (buf=", InpBufferIndex, ", shift=", InpShift, ") err=", err);
+      if(DebugTradingLogs)
+         Print("CopyBuffer failed for Upper (buf=", InpBufferIndex, ", shift=", InpShift, ") err=", err);
    }
 
    if(copied_lo <= 0)
    {
       int err2 = GetLastError();
-      Print("CopyBuffer failed for Lower (buf=", InpLowerBufferIndex, ", shift=", InpShift, ") err=", err2);
+      if(DebugTradingLogs)
+         Print("CopyBuffer failed for Lower (buf=", InpLowerBufferIndex, ", shift=", InpShift, ") err=", err2);
    }
    if(copied_buy <= 0)
    {
       int err3 = GetLastError();
-      Print("CopyBuffer failed for Buy (buf=", InpBuyBufferIndex, ", shift=", InpShift, ") err=", err3);
+      if(DebugTradingLogs)
+         Print("CopyBuffer failed for Buy (buf=", InpBuyBufferIndex, ", shift=", InpShift, ") err=", err3);
    }
    if(copied_sell <= 0)
    {
       int err4 = GetLastError();
-      Print("CopyBuffer failed for Sell (buf=", InpSellBufferIndex, ", shift=", InpShift, ") err=", err4);
+      if(DebugTradingLogs)
+         Print("CopyBuffer failed for Sell (buf=", InpSellBufferIndex, ", shift=", InpShift, ") err=", err4);
    }
 
    string comment_text = "";
@@ -260,8 +278,9 @@ void OnTick()
       string buy_s  = (buy  ==EMPTY_VALUE ? "EMPTY" : DoubleToString(buy, _Digits));
       string sell_s = (sell ==EMPTY_VALUE ? "EMPTY" : DoubleToString(sell, _Digits));
 
-      Print("Bands/Arrows[", InpShift, "] Upper=", up_s, " Lower=", lo_s,
-            " Buy=", buy_s, " Sell=", sell_s);
+      if(DebugTradingLogs)
+         Print("Bands/Arrows[", InpShift, "] Upper=", up_s, " Lower=", lo_s,
+               " Buy=", buy_s, " Sell=", sell_s);
       comment_text = StringFormat("Upper[%d]: %s\nLower[%d]: %s\nBuy[%d]: %s\nSell[%d]: %s",
                                   InpShift, up_s, InpShift, lo_s, InpShift, buy_s, InpShift, sell_s);
    }
@@ -302,12 +321,15 @@ void OnTick()
       // Append object source names to log (optional)
       if(VerboseTPSLSourceLogs)
       {
-         if(lt1!=EMPTY_VALUE && !tp1_from_buf) Print("TP1 from object: ", ln1);
-         if(lt2!=EMPTY_VALUE && !tp2_from_buf) Print("TP2 from object: ", ln2);
-         if(lt3!=EMPTY_VALUE && !tp3_from_buf) Print("TP3 from object: ", ln3);
-         if(tp1_from_buf) Print("TP1 from buffer index ", InpTP1BufferIndex);
-         if(tp2_from_buf) Print("TP2 from buffer index ", InpTP2BufferIndex);
-         if(tp3_from_buf) Print("TP3 from buffer index ", InpTP3BufferIndex);
+         if(DebugTradingLogs)
+         {
+            if(lt1!=EMPTY_VALUE && !tp1_from_buf) Print("TP1 from object: ", ln1);
+            if(lt2!=EMPTY_VALUE && !tp2_from_buf) Print("TP2 from object: ", ln2);
+            if(lt3!=EMPTY_VALUE && !tp3_from_buf) Print("TP3 from object: ", ln3);
+            if(tp1_from_buf) Print("TP1 from buffer index ", InpTP1BufferIndex);
+            if(tp2_from_buf) Print("TP2 from buffer index ", InpTP2BufferIndex);
+            if(tp3_from_buf) Print("TP3 from buffer index ", InpTP3BufferIndex);
+         }
       }
    }
 
@@ -317,7 +339,8 @@ void OnTick()
       string tp1_s = (tp1==EMPTY_VALUE? "EMPTY" : DoubleToString(tp1, _Digits));
       string tp2_s = (tp2==EMPTY_VALUE? "EMPTY" : DoubleToString(tp2, _Digits));
       string tp3_s = (tp3==EMPTY_VALUE? "EMPTY" : DoubleToString(tp3, _Digits));
-      Print("TP Levels: TP1=", tp1_s, " TP2=", tp2_s, " TP3=", tp3_s);
+      if(DebugTradingLogs)
+         Print("TP Levels: TP1=", tp1_s, " TP2=", tp2_s, " TP3=", tp3_s);
       string tp_line = StringFormat("\nTP1: %s  TP2: %s  TP3: %s", tp1_s, tp2_s, tp3_s);
       comment_text = (StringLen(comment_text)>0 ? comment_text + tp_line : tp_line);
    }
@@ -355,12 +378,15 @@ void OnTick()
       if(sl3==EMPTY_VALUE) sl3 = ls3;
       if(VerboseTPSLSourceLogs)
       {
-         if(ls1!=EMPTY_VALUE && !sl1_from_buf) Print("SL1 from object: ", lnS1);
-         if(ls2!=EMPTY_VALUE && !sl2_from_buf) Print("SL2 from object: ", lnS2);
-         if(ls3!=EMPTY_VALUE && !sl3_from_buf) Print("SL3 from object: ", lnS3);
-         if(sl1_from_buf) Print("SL1 from buffer index ", InpSL1BufferIndex);
-         if(sl2_from_buf) Print("SL2 from buffer index ", InpSL2BufferIndex);
-         if(sl3_from_buf) Print("SL3 from buffer index ", InpSL3BufferIndex);
+         if(DebugTradingLogs)
+         {
+            if(ls1!=EMPTY_VALUE && !sl1_from_buf) Print("SL1 from object: ", lnS1);
+            if(ls2!=EMPTY_VALUE && !sl2_from_buf) Print("SL2 from object: ", lnS2);
+            if(ls3!=EMPTY_VALUE && !sl3_from_buf) Print("SL3 from object: ", lnS3);
+            if(sl1_from_buf) Print("SL1 from buffer index ", InpSL1BufferIndex);
+            if(sl2_from_buf) Print("SL2 from buffer index ", InpSL2BufferIndex);
+            if(sl3_from_buf) Print("SL3 from buffer index ", InpSL3BufferIndex);
+         }
       }
    }
 
@@ -369,7 +395,8 @@ void OnTick()
       string sl1_s = (sl1==EMPTY_VALUE? "EMPTY" : DoubleToString(sl1, _Digits));
       string sl2_s = (sl2==EMPTY_VALUE? "EMPTY" : DoubleToString(sl2, _Digits));
       string sl3_s = (sl3==EMPTY_VALUE? "EMPTY" : DoubleToString(sl3, _Digits));
-      Print("SL Levels: SL1=", sl1_s, " SL2=", sl2_s, " SL3=", sl3_s);
+      if(DebugTradingLogs)
+         Print("SL Levels: SL1=", sl1_s, " SL2=", sl2_s, " SL3=", sl3_s);
       string sl_line = StringFormat("\nSL1: %s  SL2: %s  SL3: %s", sl1_s, sl2_s, sl3_s);
       comment_text = (StringLen(comment_text)>0 ? comment_text + sl_line : sl_line);
    }
@@ -500,20 +527,69 @@ void OnTick()
                }
             }
          }
+         // Determine per-TP lot sizes (fixed mode fallback to `Lots` when <= 0)
+         double lots1 = (lotSize_TP1 > 0.0 ? lotSize_TP1 : Lots);
+         double lots2 = (lotSize_TP2 > 0.0 ? lotSize_TP2 : Lots);
+         double lots3 = (lotSize_TP3 > 0.0 ? lotSize_TP3 : Lots);
+
+         // Order mode handled via enum (fixed vs percent)
+
          // BUY side
          if(eff_buy_trigger && bt_curr[0] != g_last_buy_bar_time)
          {
-            if(rtp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, ask, rtp1, adj_sl1, StringFormat("TP1 %s", tstamp));
-            if(rtp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, ask, rtp2, adj_sl2, StringFormat("TP2 %s", tstamp));
-            if(rtp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, ask, rtp3, adj_sl3, StringFormat("TP3 %s", tstamp));
+            // If percent mode: compute lots so loss at SL equals % of balance
+            if(OrderMode == ORDER_MODE_PERCENT)
+            {
+               double pct1 = (PercentOfBalance_SL1>0.0 ? PercentOfBalance_SL1 : PercentOfBalance);
+               double pct2 = (PercentOfBalance_SL2>0.0 ? PercentOfBalance_SL2 : PercentOfBalance);
+               double pct3 = (PercentOfBalance_SL3>0.0 ? PercentOfBalance_SL3 : PercentOfBalance);
+               double l1 = CalcLotsByRiskPercent(ORDER_TYPE_BUY, pct1, ask, adj_sl1);
+               double l2 = CalcLotsByRiskPercent(ORDER_TYPE_BUY, pct2, ask, adj_sl2);
+               double l3 = CalcLotsByRiskPercent(ORDER_TYPE_BUY, pct3, ask, adj_sl3);
+               if(l1>0.0) lots1 = l1;
+               if(l2>0.0) lots2 = l2;
+               if(l3>0.0) lots3 = l3;
+               if(DebugTradingLogs)
+                  Print("LotSizes BUY Percent: pcts(", DoubleToString(pct1,2), ", ", DoubleToString(pct2,2), ", ", DoubleToString(pct3,2), ") lots(", DoubleToString(lots1,2), ", ", DoubleToString(lots2,2), ", ", DoubleToString(lots3,2), ")");
+            }
+            else if(DebugTradingLogs)
+            {
+               Print("LotSizes BUY Fixed: input Lots=", DoubleToString(Lots,2),
+                     " overrides(TP1=", DoubleToString(lotSize_TP1,2), ", TP2=", DoubleToString(lotSize_TP2,2), ", TP3=", DoubleToString(lotSize_TP3,2), ")",
+                     " result lots(", DoubleToString(lots1,2), ", ", DoubleToString(lots2,2), ", ", DoubleToString(lots3,2), ")");
+            }
+            if(rtp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, lots1, ask, rtp1, adj_sl1, StringFormat("TP1 %s", tstamp));
+            if(rtp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, lots2, ask, rtp2, adj_sl2, StringFormat("TP2 %s", tstamp));
+            if(rtp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, lots3, ask, rtp3, adj_sl3, StringFormat("TP3 %s", tstamp));
             g_last_buy_bar_time = bt_curr[0];
          }
          // SELL side
          if(eff_sell_trigger && bt_curr[0] != g_last_sell_bar_time)
          {
-            if(rtp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, bid, rtp1, adj_sl1, StringFormat("TP1 %s", tstamp));
-            if(rtp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, bid, rtp2, adj_sl2, StringFormat("TP2 %s", tstamp));
-            if(rtp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, bid, rtp3, adj_sl3, StringFormat("TP3 %s", tstamp));
+            // If percent mode: compute lots so loss at SL equals % of balance
+            if(OrderMode == ORDER_MODE_PERCENT)
+            {
+               double pct1 = (PercentOfBalance_SL1>0.0 ? PercentOfBalance_SL1 : PercentOfBalance);
+               double pct2 = (PercentOfBalance_SL2>0.0 ? PercentOfBalance_SL2 : PercentOfBalance);
+               double pct3 = (PercentOfBalance_SL3>0.0 ? PercentOfBalance_SL3 : PercentOfBalance);
+               double l1 = CalcLotsByRiskPercent(ORDER_TYPE_SELL, pct1, bid, adj_sl1);
+               double l2 = CalcLotsByRiskPercent(ORDER_TYPE_SELL, pct2, bid, adj_sl2);
+               double l3 = CalcLotsByRiskPercent(ORDER_TYPE_SELL, pct3, bid, adj_sl3);
+               if(l1>0.0) lots1 = l1;
+               if(l2>0.0) lots2 = l2;
+               if(l3>0.0) lots3 = l3;
+               if(DebugTradingLogs)
+                  Print("LotSizes SELL Percent: pcts(", DoubleToString(pct1,2), ", ", DoubleToString(pct2,2), ", ", DoubleToString(pct3,2), ") lots(", DoubleToString(lots1,2), ", ", DoubleToString(lots2,2), ", ", DoubleToString(lots3,2), ")");
+            }
+            else if(DebugTradingLogs)
+            {
+               Print("LotSizes SELL Fixed: input Lots=", DoubleToString(Lots,2),
+                     " overrides(TP1=", DoubleToString(lotSize_TP1,2), ", TP2=", DoubleToString(lotSize_TP2,2), ", TP3=", DoubleToString(lotSize_TP3,2), ")",
+                     " result lots(", DoubleToString(lots1,2), ", ", DoubleToString(lots2,2), ", ", DoubleToString(lots3,2), ")");
+            }
+            if(rtp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, lots1, bid, rtp1, adj_sl1, StringFormat("TP1 %s", tstamp));
+            if(rtp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, lots2, bid, rtp2, adj_sl2, StringFormat("TP2 %s", tstamp));
+            if(rtp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, lots3, bid, rtp3, adj_sl3, StringFormat("TP3 %s", tstamp));
             g_last_sell_bar_time = bt_curr[0];
          }
       }
@@ -558,7 +634,7 @@ double SnapPrice(const double price, const double tick_size, const int digits)
 //+------------------------------------------------------------------+
 //| Helper: place a market order with validation                    |
 //+------------------------------------------------------------------+
-bool TryPlaceOrder(ENUM_ORDER_TYPE type, double mkt_price, double tp, double sl, const string note)
+bool TryPlaceOrder(ENUM_ORDER_TYPE type, double lots, double mkt_price, double tp, double sl, const string note)
 {
    // Normalize prices
    int digits = (int)_Digits;
@@ -574,6 +650,18 @@ bool TryPlaceOrder(ENUM_ORDER_TYPE type, double mkt_price, double tp, double sl,
    SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE, tick_size);
    if(tick_size<=0) tick_size=point;
    double min_dist = stops_level * point;
+
+   // Normalize and clamp lots to symbol volume constraints
+   double vmin=0.0, vmax=0.0, vstep=0.0;
+   SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN, vmin);
+   SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX, vmax);
+   SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP, vstep);
+   if(vstep>0.0)
+      lots = MathRound(lots / vstep) * vstep;
+   if(vmin>0.0 && lots < vmin)
+      lots = vmin;
+   if(vmax>0.0 && lots > vmax)
+      lots = vmax;
 
    if(type==ORDER_TYPE_BUY)
    {
@@ -591,13 +679,13 @@ bool TryPlaceOrder(ENUM_ORDER_TYPE type, double mkt_price, double tp, double sl,
          ntp = MathRound(ntp/tick_size)*tick_size;
          nsl = MathRound(nsl/tick_size)*tick_size;
       }
-      bool ok = trade.Buy(Lots, _Symbol, 0.0, nsl, ntp, note);
+      bool ok = trade.Buy(lots, _Symbol, 0.0, nsl, ntp, note);
       if(DebugTradingLogs)
       {
-         Print("Buy attempt: lots=", Lots, " sl=", nsl, " tp=", ntp, " ret=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
+         Print("Buy attempt: lots=", lots, " sl=", nsl, " tp=", ntp, " ret=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
+         if(!ok) Print("Buy failed: ", _LastError);
+         else    Print("Buy opened: ", lots, " TP=", ntp, " SL=", nsl, " ", note);
       }
-      if(!ok) Print("Buy failed: ", _LastError);
-      else    Print("Buy opened: ", Lots, " TP=", ntp, " SL=", nsl, " ", note);
       return ok;
    }
    else if(type==ORDER_TYPE_SELL)
@@ -614,16 +702,58 @@ bool TryPlaceOrder(ENUM_ORDER_TYPE type, double mkt_price, double tp, double sl,
          ntp = MathRound(ntp/tick_size)*tick_size;
          nsl = MathRound(nsl/tick_size)*tick_size;
       }
-      bool ok = trade.Sell(Lots, _Symbol, 0.0, nsl, ntp, note);
+      bool ok = trade.Sell(lots, _Symbol, 0.0, nsl, ntp, note);
       if(DebugTradingLogs)
       {
-         Print("Sell attempt: lots=", Lots, " sl=", nsl, " tp=", ntp, " ret=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
+         Print("Sell attempt: lots=", lots, " sl=", nsl, " tp=", ntp, " ret=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
+         if(!ok) Print("Sell failed: ", _LastError);
+         else    Print("Sell opened: ", lots, " TP=", ntp, " SL=", nsl, " ", note);
       }
-      if(!ok) Print("Sell failed: ", _LastError);
-      else    Print("Sell opened: ", Lots, " TP=", ntp, " SL=", nsl, " ", note);
       return ok;
    }
    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Helper: compute lots so loss at SL equals % of balance          |
+//+------------------------------------------------------------------+
+double CalcLotsByRiskPercent(const ENUM_ORDER_TYPE type, const double percent, const double entry_price, const double sl_price)
+{
+   if(percent <= 0.0) return 0.0;
+   if(sl_price==EMPTY_VALUE || sl_price<=0.0 || entry_price<=0.0) return 0.0;
+
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(balance <= 0.0) return 0.0;
+   double desired_loss = balance * (percent/100.0);
+   if(desired_loss <= 0.0) return 0.0;
+
+   double profit1 = 0.0;
+   if(!OrderCalcProfit(type, _Symbol, 1.0, entry_price, sl_price, profit1))
+      return 0.0;
+   double loss_per_lot = MathAbs(profit1);
+   if(loss_per_lot <= 0.0) return 0.0;
+
+   double raw_lots = desired_loss / loss_per_lot;
+
+   // Clamp to symbol volume constraints
+   double vmin=0.0, vmax=0.0, vstep=0.0;
+   SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN, vmin);
+   SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX, vmax);
+   SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP, vstep);
+   double sized = raw_lots;
+   if(vstep>0.0) sized = MathRound(sized / vstep) * vstep;
+   if(vmin>0.0 && sized < vmin) sized = vmin;
+   if(vmax>0.0 && sized > vmax) sized = vmax;
+   if(DebugTradingLogs)
+   {
+      string side = (type==ORDER_TYPE_BUY ? "BUY" : "SELL");
+      Print("RiskCalc ", side, ": pct=", DoubleToString(percent,2), "% bal=", DoubleToString(balance,2),
+            " entry=", DoubleToString(entry_price,_Digits), " SL=", DoubleToString(sl_price,_Digits),
+            " riskAmt=", DoubleToString(desired_loss,2), " lossPerLot=", DoubleToString(loss_per_lot,2),
+            " rawLots=", DoubleToString(raw_lots,4), " sizedLots=", DoubleToString(sized,4),
+            " [vmin=", DoubleToString(vmin,2), ", vstep=", DoubleToString(vstep,2), ", vmax=", DoubleToString(vmax,2), "]");
+   }
+   return sized;
 }
 
 //+------------------------------------------------------------------+

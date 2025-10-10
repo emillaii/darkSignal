@@ -58,8 +58,8 @@ input string         s1                 = "";
 input int            BandsPeriod        = 15;
 input double         Multiplier         = 2.0;
 input int            BandsShift         = 0;
-input ENUM_MA_METHOD BandsMethod        = MODE_SMA;
-input ENUM_APPLIED_PRICE BandsPrice     = PRICE_TYPICAL; // 5 per your set
+input ENUM_MA_METHOD BandsMethod        = 1;
+input ENUM_APPLIED_PRICE BandsPrice     = 5; // 5 per your set
 input string         s2                 = "";
 input int            LineWidth1         = 7;
 input int            LineWidth2         = 3;
@@ -71,12 +71,12 @@ input bool           UseNotification    = false;
 input bool           UseSound           = false;
 input string         SoundName          = "alert.wav";
 input string         s4                 = "";
-input double         TP1e               = 0.8;
-input double         TP2e               = 1.6;
-input double         TP3e               = 3.2;
-input double         SL1e               = 1.6;
-input double         SL2e               = 3.2;
-input double         SL3e               = 5.0;
+input double         TP1e               = 0.9;
+input double         TP2e               = 1.2;
+input double         TP3e               = 1.6;
+input double         SL1e               = 0.8;
+input double         SL2e               = 0.8;
+input double         SL3e               = 0.8;
 input bool           AbleTP1            = true;
 input bool           AbleTP2            = true;
 input bool           AbleTP3            = true;
@@ -93,7 +93,7 @@ input bool           DrawSignals        = true;                                 
 // Trading settings
 // Order sizing selection
 enum ENUM_ORDER_SIZING_MODE { ORDER_MODE_FIXED = 0, ORDER_MODE_PERCENT = 1 };
-input bool           EnableTrading      = false;                                        // Enable live trading
+input bool           EnableTrading      = true;                                        // Enable live trading
 input double         Lots               = 0.10;                                         // Order volume
 // Order sizing mode as dropdown: Fixed or Percent-of-balance
 input ENUM_ORDER_SIZING_MODE OrderMode = ORDER_MODE_FIXED;                              // Fixed or Percent
@@ -109,15 +109,29 @@ input int            DeviationPoints    = 20;                                   
 input long           MagicNumber        = 86015001;                                     // Magic number
 input bool           StrictTPValidation = false;                                        // If true, skip orders when TP/SL invalid
 input bool           AutoAdjustStops    = true;                                         // If true, adjust TP/SL to meet broker min
-input bool           DebugTradingLogs   = false;                                        // Extra logs for trading decisions
-// Logging controls
-input bool           VerboseTPSLSourceLogs = false;                                     // Print TP/SL source object/buffer logs
+// Logging controls (removed logging for performance)
 input bool           PreserveStopsRelative = true;                                      // Shift all SLs to keep spacing when constrained
 input bool           ReverseDirection   = false;                                        // Reverse Buy/Sell and swap TP/SL
+
+// Martingale settings
+enum ENUM_MARTINGALE_MODE { MARTINGALE_MULTIPLIER = 0, MARTINGALE_ADDITION = 1 };
+input bool           EnableMartingale   = false;                                        // Enable martingale sizing
+input ENUM_MARTINGALE_MODE MartingaleMode = MARTINGALE_MULTIPLIER;                      // Multiplier or addition mode
+input double         MartingaleLevel2   = 1.5;                                          // Level 2 multiplier/addition factor
+input double         MartingaleLevel3   = 2.0;                                          // Level 3 multiplier/addition factor
+input double         MartingaleLevel4   = 3.0;                                          // Level 4 multiplier/addition factor
+input double         MartingaleLevel5   = 4.0;                                          // Level 5 multiplier/addition factor
+input double         MartingaleLevel6   = 6.0;                                          // Level 6 multiplier/addition factor
+input double         MartingaleLevel7   = 8.0;                                          // Level 7 multiplier/addition factor
+input double         MartingaleLevel8   = 10.0;                                         // Level 8 multiplier/addition factor
+input double         MartingaleLevel9   = 12.0;                                         // Level 9 multiplier/addition factor
+input double         MartingaleLevel10  = 15.0;                                         // Level 10 multiplier/addition factor
 
 // Internal state to avoid duplicate orders per bar
 datetime g_last_buy_bar_time = 0;
 datetime g_last_sell_bar_time = 0;
+int      g_martingale_levels[3] = {1, 1, 1};
+ulong    g_last_martingale_deal_tp[3] = {0, 0, 0};
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -172,15 +186,7 @@ int OnInit()
    );
 
    if(g_indicator_handle == INVALID_HANDLE)
-   {
-      int err = GetLastError();
-      if(DebugTradingLogs)
-         Print("Failed to create indicator handle. Error: ", err,
-               ". Ensure MT5 version exists at MQL5/Indicators/", InpIndicatorPath);
       return INIT_FAILED;
-   }
-   if(DebugTradingLogs)
-      Print("Indicator handle created: ", g_indicator_handle);
    return(INIT_SUCCEEDED);
 }
 
@@ -211,6 +217,8 @@ void OnTick()
    if(g_indicator_handle == INVALID_HANDLE)
       return;
 
+   UpdateMartingaleLevels();
+
    double val_up[1];
    double val_lo[1];
    double val_buy[1];
@@ -229,31 +237,10 @@ void OnTick()
    int edge_buy   = CopyBuffer(g_indicator_handle, InpBuyBufferIndex, 0, 2, buy_edge);
    int edge_sell  = CopyBuffer(g_indicator_handle, InpSellBufferIndex, 0, 2, sell_edge);
 
-   if(copied_up <= 0)
-   {
-      int err = GetLastError();
-      if(DebugTradingLogs)
-         Print("CopyBuffer failed for Upper (buf=", InpBufferIndex, ", shift=", InpShift, ") err=", err);
-   }
-
-   if(copied_lo <= 0)
-   {
-      int err2 = GetLastError();
-      if(DebugTradingLogs)
-         Print("CopyBuffer failed for Lower (buf=", InpLowerBufferIndex, ", shift=", InpShift, ") err=", err2);
-   }
-   if(copied_buy <= 0)
-   {
-      int err3 = GetLastError();
-      if(DebugTradingLogs)
-         Print("CopyBuffer failed for Buy (buf=", InpBuyBufferIndex, ", shift=", InpShift, ") err=", err3);
-   }
-   if(copied_sell <= 0)
-   {
-      int err4 = GetLastError();
-      if(DebugTradingLogs)
-         Print("CopyBuffer failed for Sell (buf=", InpSellBufferIndex, ", shift=", InpShift, ") err=", err4);
-   }
+   if(copied_up <= 0)   GetLastError();
+   if(copied_lo <= 0)   GetLastError();
+   if(copied_buy <= 0)  GetLastError();
+   if(copied_sell <= 0) GetLastError();
 
    string comment_text = "";
    // Compute rising-edge triggers on current bar: from 0.0 -> >0.0
@@ -278,9 +265,6 @@ void OnTick()
       string buy_s  = (buy  ==EMPTY_VALUE ? "EMPTY" : DoubleToString(buy, _Digits));
       string sell_s = (sell ==EMPTY_VALUE ? "EMPTY" : DoubleToString(sell, _Digits));
 
-      if(DebugTradingLogs)
-         Print("Bands/Arrows[", InpShift, "] Upper=", up_s, " Lower=", lo_s,
-               " Buy=", buy_s, " Sell=", sell_s);
       comment_text = StringFormat("Upper[%d]: %s\nLower[%d]: %s\nBuy[%d]: %s\nSell[%d]: %s",
                                   InpShift, up_s, InpShift, lo_s, InpShift, buy_s, InpShift, sell_s);
    }
@@ -318,19 +302,6 @@ void OnTick()
       if(tp1==EMPTY_VALUE) tp1 = lt1;
       if(tp2==EMPTY_VALUE) tp2 = lt2;
       if(tp3==EMPTY_VALUE) tp3 = lt3;
-      // Append object source names to log (optional)
-      if(VerboseTPSLSourceLogs)
-      {
-         if(DebugTradingLogs)
-         {
-            if(lt1!=EMPTY_VALUE && !tp1_from_buf) Print("TP1 from object: ", ln1);
-            if(lt2!=EMPTY_VALUE && !tp2_from_buf) Print("TP2 from object: ", ln2);
-            if(lt3!=EMPTY_VALUE && !tp3_from_buf) Print("TP3 from object: ", ln3);
-            if(tp1_from_buf) Print("TP1 from buffer index ", InpTP1BufferIndex);
-            if(tp2_from_buf) Print("TP2 from buffer index ", InpTP2BufferIndex);
-            if(tp3_from_buf) Print("TP3 from buffer index ", InpTP3BufferIndex);
-         }
-      }
    }
 
    // Log TP levels when any are found
@@ -339,8 +310,6 @@ void OnTick()
       string tp1_s = (tp1==EMPTY_VALUE? "EMPTY" : DoubleToString(tp1, _Digits));
       string tp2_s = (tp2==EMPTY_VALUE? "EMPTY" : DoubleToString(tp2, _Digits));
       string tp3_s = (tp3==EMPTY_VALUE? "EMPTY" : DoubleToString(tp3, _Digits));
-      if(DebugTradingLogs)
-         Print("TP Levels: TP1=", tp1_s, " TP2=", tp2_s, " TP3=", tp3_s);
       string tp_line = StringFormat("\nTP1: %s  TP2: %s  TP3: %s", tp1_s, tp2_s, tp3_s);
       comment_text = (StringLen(comment_text)>0 ? comment_text + tp_line : tp_line);
    }
@@ -376,18 +345,6 @@ void OnTick()
       if(sl1==EMPTY_VALUE) sl1 = ls1;
       if(sl2==EMPTY_VALUE) sl2 = ls2;
       if(sl3==EMPTY_VALUE) sl3 = ls3;
-      if(VerboseTPSLSourceLogs)
-      {
-         if(DebugTradingLogs)
-         {
-            if(ls1!=EMPTY_VALUE && !sl1_from_buf) Print("SL1 from object: ", lnS1);
-            if(ls2!=EMPTY_VALUE && !sl2_from_buf) Print("SL2 from object: ", lnS2);
-            if(ls3!=EMPTY_VALUE && !sl3_from_buf) Print("SL3 from object: ", lnS3);
-            if(sl1_from_buf) Print("SL1 from buffer index ", InpSL1BufferIndex);
-            if(sl2_from_buf) Print("SL2 from buffer index ", InpSL2BufferIndex);
-            if(sl3_from_buf) Print("SL3 from buffer index ", InpSL3BufferIndex);
-         }
-      }
    }
 
    if(sl1!=EMPTY_VALUE || sl2!=EMPTY_VALUE || sl3!=EMPTY_VALUE)
@@ -395,8 +352,6 @@ void OnTick()
       string sl1_s = (sl1==EMPTY_VALUE? "EMPTY" : DoubleToString(sl1, _Digits));
       string sl2_s = (sl2==EMPTY_VALUE? "EMPTY" : DoubleToString(sl2, _Digits));
       string sl3_s = (sl3==EMPTY_VALUE? "EMPTY" : DoubleToString(sl3, _Digits));
-      if(DebugTradingLogs)
-         Print("SL Levels: SL1=", sl1_s, " SL2=", sl2_s, " SL3=", sl3_s);
       string sl_line = StringFormat("\nSL1: %s  SL2: %s  SL3: %s", sl1_s, sl2_s, sl3_s);
       comment_text = (StringLen(comment_text)>0 ? comment_text + sl_line : sl_line);
    }
@@ -549,18 +504,13 @@ void OnTick()
                if(l1>0.0) lots1 = l1;
                if(l2>0.0) lots2 = l2;
                if(l3>0.0) lots3 = l3;
-               if(DebugTradingLogs)
-                  Print("LotSizes BUY Percent: pcts(", DoubleToString(pct1,2), ", ", DoubleToString(pct2,2), ", ", DoubleToString(pct3,2), ") lots(", DoubleToString(lots1,2), ", ", DoubleToString(lots2,2), ", ", DoubleToString(lots3,2), ")");
             }
-            else if(DebugTradingLogs)
-            {
-               Print("LotSizes BUY Fixed: input Lots=", DoubleToString(Lots,2),
-                     " overrides(TP1=", DoubleToString(lotSize_TP1,2), ", TP2=", DoubleToString(lotSize_TP2,2), ", TP3=", DoubleToString(lotSize_TP3,2), ")",
-                     " result lots(", DoubleToString(lots1,2), ", ", DoubleToString(lots2,2), ", ", DoubleToString(lots3,2), ")");
-            }
-            if(rtp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, lots1, ask, rtp1, adj_sl1, StringFormat("TP1 %s", tstamp));
-            if(rtp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, lots2, ask, rtp2, adj_sl2, StringFormat("TP2 %s", tstamp));
-            if(rtp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, lots3, ask, rtp3, adj_sl3, StringFormat("TP3 %s", tstamp));
+            double martLots1 = ApplyMartingaleToLots(lots1, 0);
+            double martLots2 = ApplyMartingaleToLots(lots2, 1);
+            double martLots3 = ApplyMartingaleToLots(lots3, 2);
+            if(rtp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, martLots1, ask, rtp1, adj_sl1, StringFormat("TP1 %s", tstamp));
+            if(rtp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, martLots2, ask, rtp2, adj_sl2, StringFormat("TP2 %s", tstamp));
+            if(rtp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, martLots3, ask, rtp3, adj_sl3, StringFormat("TP3 %s", tstamp));
             g_last_buy_bar_time = bt_curr[0];
          }
          // SELL side
@@ -578,22 +528,126 @@ void OnTick()
                if(l1>0.0) lots1 = l1;
                if(l2>0.0) lots2 = l2;
                if(l3>0.0) lots3 = l3;
-               if(DebugTradingLogs)
-                  Print("LotSizes SELL Percent: pcts(", DoubleToString(pct1,2), ", ", DoubleToString(pct2,2), ", ", DoubleToString(pct3,2), ") lots(", DoubleToString(lots1,2), ", ", DoubleToString(lots2,2), ", ", DoubleToString(lots3,2), ")");
             }
-            else if(DebugTradingLogs)
-            {
-               Print("LotSizes SELL Fixed: input Lots=", DoubleToString(Lots,2),
-                     " overrides(TP1=", DoubleToString(lotSize_TP1,2), ", TP2=", DoubleToString(lotSize_TP2,2), ", TP3=", DoubleToString(lotSize_TP3,2), ")",
-                     " result lots(", DoubleToString(lots1,2), ", ", DoubleToString(lots2,2), ", ", DoubleToString(lots3,2), ")");
-            }
-            if(rtp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, lots1, bid, rtp1, adj_sl1, StringFormat("TP1 %s", tstamp));
-            if(rtp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, lots2, bid, rtp2, adj_sl2, StringFormat("TP2 %s", tstamp));
-            if(rtp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, lots3, bid, rtp3, adj_sl3, StringFormat("TP3 %s", tstamp));
+            double martLots1 = ApplyMartingaleToLots(lots1, 0);
+            double martLots2 = ApplyMartingaleToLots(lots2, 1);
+            double martLots3 = ApplyMartingaleToLots(lots3, 2);
+            if(rtp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, martLots1, bid, rtp1, adj_sl1, StringFormat("TP1 %s", tstamp));
+            if(rtp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, martLots2, bid, rtp2, adj_sl2, StringFormat("TP2 %s", tstamp));
+            if(rtp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, martLots3, bid, rtp3, adj_sl3, StringFormat("TP3 %s", tstamp));
             g_last_sell_bar_time = bt_curr[0];
          }
       }
       ChartRedraw();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Helper: apply martingale factor to lot size                     |
+//+------------------------------------------------------------------+
+double GetMartingaleConfigValue(const int level)
+{
+   switch(level)
+   {
+      case 2:  return MartingaleLevel2;
+      case 3:  return MartingaleLevel3;
+      case 4:  return MartingaleLevel4;
+      case 5:  return MartingaleLevel5;
+      case 6:  return MartingaleLevel6;
+      case 7:  return MartingaleLevel7;
+      case 8:  return MartingaleLevel8;
+      case 9:  return MartingaleLevel9;
+      case 10: return MartingaleLevel10;
+      default: break;
+   }
+   return (MartingaleMode == MARTINGALE_MULTIPLIER ? 1.0 : 0.0);
+}
+
+double ApplyMartingaleToLots(const double base_lots, const int tp_index)
+{
+   if(!EnableMartingale)
+      return base_lots;
+
+   int idx = (tp_index >= 0 && tp_index < 3) ? tp_index : 0;
+   int level = g_martingale_levels[idx];
+   if(level < 1) level = 1;
+   if(level > 10) level = 10;
+   if(level == 1)
+      return base_lots;
+
+   double cfg = GetMartingaleConfigValue(level);
+   double adjusted = base_lots;
+   if(MartingaleMode == MARTINGALE_MULTIPLIER)
+   {
+      double factor = (cfg > 0.0 ? cfg : 1.0);
+      adjusted = base_lots * factor;
+   }
+   else // addition mode
+   {
+      adjusted = base_lots + cfg;
+   }
+
+   if(adjusted < 0.0)
+      adjusted = 0.0;
+   return adjusted;
+}
+
+void UpdateMartingaleLevels()
+{
+   if(!EnableMartingale)
+   {
+      for(int i=0; i<3; ++i)
+         g_martingale_levels[i] = 1;
+      return;
+   }
+
+   if(!HistorySelect(0, TimeCurrent()))
+      return;
+
+   int deals = HistoryDealsTotal();
+   for(int i = 0; i < deals; ++i)
+   {
+      ulong deal_ticket = HistoryDealGetTicket(i);
+      if(deal_ticket == 0)
+         continue;
+
+      long magic = HistoryDealGetInteger(deal_ticket, DEAL_MAGIC);
+      if((long)MagicNumber != magic)
+         continue;
+      string sym = HistoryDealGetString(deal_ticket, DEAL_SYMBOL);
+      if(sym != _Symbol)
+         continue;
+
+      long entry = HistoryDealGetInteger(deal_ticket, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY && entry != DEAL_ENTRY_INOUT)
+         continue;
+
+      string comment = HistoryDealGetString(deal_ticket, DEAL_COMMENT);
+      int tp_index = -1;
+      if(StringFind(comment, "TP1") >= 0)
+         tp_index = 0;
+      else if(StringFind(comment, "TP2") >= 0)
+         tp_index = 1;
+      else if(StringFind(comment, "TP3") >= 0)
+         tp_index = 2;
+
+      if(tp_index < 0)
+         continue;
+
+      if(deal_ticket <= g_last_martingale_deal_tp[tp_index])
+         continue;
+
+      double profit = HistoryDealGetDouble(deal_ticket, DEAL_PROFIT)
+                    + HistoryDealGetDouble(deal_ticket, DEAL_SWAP)
+                    + HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION)
+                    + HistoryDealGetDouble(deal_ticket, DEAL_FEE);
+
+      if(profit < -1e-8)
+         g_martingale_levels[tp_index] = MathMin(10, g_martingale_levels[tp_index] + 1);
+      else
+         g_martingale_levels[tp_index] = 1;
+
+      g_last_martingale_deal_tp[tp_index] = deal_ticket;
    }
 }
 
@@ -668,7 +722,6 @@ bool TryPlaceOrder(ENUM_ORDER_TYPE type, double lots, double mkt_price, double t
       // Validate and optionally adjust
       if(!(ntp>ask && nsl<ask))
       {
-         if(DebugTradingLogs) Print("BUY validation failed: tp<=ask or sl>=ask (tp=",ntp,", sl=",nsl,", ask=",ask,")");
          if(StrictTPValidation) return false;
       }
       if(AutoAdjustStops)
@@ -680,19 +733,12 @@ bool TryPlaceOrder(ENUM_ORDER_TYPE type, double lots, double mkt_price, double t
          nsl = MathRound(nsl/tick_size)*tick_size;
       }
       bool ok = trade.Buy(lots, _Symbol, 0.0, nsl, ntp, note);
-      if(DebugTradingLogs)
-      {
-         Print("Buy attempt: lots=", lots, " sl=", nsl, " tp=", ntp, " ret=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
-         if(!ok) Print("Buy failed: ", _LastError);
-         else    Print("Buy opened: ", lots, " TP=", ntp, " SL=", nsl, " ", note);
-      }
       return ok;
    }
    else if(type==ORDER_TYPE_SELL)
    {
       if(!(ntp<bid && nsl>bid))
       {
-         if(DebugTradingLogs) Print("SELL validation failed: tp>=bid or sl<=bid (tp=",ntp,", sl=",nsl,", bid=",bid,")");
          if(StrictTPValidation) return false;
       }
       if(AutoAdjustStops)
@@ -703,12 +749,6 @@ bool TryPlaceOrder(ENUM_ORDER_TYPE type, double lots, double mkt_price, double t
          nsl = MathRound(nsl/tick_size)*tick_size;
       }
       bool ok = trade.Sell(lots, _Symbol, 0.0, nsl, ntp, note);
-      if(DebugTradingLogs)
-      {
-         Print("Sell attempt: lots=", lots, " sl=", nsl, " tp=", ntp, " ret=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
-         if(!ok) Print("Sell failed: ", _LastError);
-         else    Print("Sell opened: ", lots, " TP=", ntp, " SL=", nsl, " ", note);
-      }
       return ok;
    }
    return false;
@@ -744,15 +784,6 @@ double CalcLotsByRiskPercent(const ENUM_ORDER_TYPE type, const double percent, c
    if(vstep>0.0) sized = MathRound(sized / vstep) * vstep;
    if(vmin>0.0 && sized < vmin) sized = vmin;
    if(vmax>0.0 && sized > vmax) sized = vmax;
-   if(DebugTradingLogs)
-   {
-      string side = (type==ORDER_TYPE_BUY ? "BUY" : "SELL");
-      Print("RiskCalc ", side, ": pct=", DoubleToString(percent,2), "% bal=", DoubleToString(balance,2),
-            " entry=", DoubleToString(entry_price,_Digits), " SL=", DoubleToString(sl_price,_Digits),
-            " riskAmt=", DoubleToString(desired_loss,2), " lossPerLot=", DoubleToString(loss_per_lot,2),
-            " rawLots=", DoubleToString(raw_lots,4), " sizedLots=", DoubleToString(sized,4),
-            " [vmin=", DoubleToString(vmin,2), ", vstep=", DoubleToString(vstep,2), ", vmax=", DoubleToString(vmax,2), "]");
-   }
    return sized;
 }
 

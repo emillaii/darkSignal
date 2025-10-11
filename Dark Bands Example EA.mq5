@@ -117,6 +117,7 @@ input bool           ReverseDirection   = false;                                
 enum ENUM_MARTINGALE_MODE { MARTINGALE_MULTIPLIER = 0, MARTINGALE_ADDITION = 1 };
 input bool           EnableMartingale   = false;                                        // Enable martingale sizing
 input ENUM_MARTINGALE_MODE MartingaleMode = MARTINGALE_MULTIPLIER;                      // Multiplier or addition mode
+input bool           MartingaleDebugLogs = false;                                       // Log martingale sizing details
 input double         MartingaleLevel2   = 1.5;                                          // Level 2 multiplier/addition factor
 input double         MartingaleLevel3   = 2.0;                                          // Level 3 multiplier/addition factor
 input double         MartingaleLevel4   = 3.0;                                          // Level 4 multiplier/addition factor
@@ -132,6 +133,7 @@ datetime g_last_buy_bar_time = 0;
 datetime g_last_sell_bar_time = 0;
 int      g_martingale_levels[3] = {1, 1, 1};
 ulong    g_last_martingale_deal_tp[3] = {0, 0, 0};
+int      g_prev_logged_levels[3] = {1, 1, 1};
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -508,6 +510,12 @@ void OnTick()
             double martLots1 = ApplyMartingaleToLots(lots1, 0);
             double martLots2 = ApplyMartingaleToLots(lots2, 1);
             double martLots3 = ApplyMartingaleToLots(lots3, 2);
+            if(MartingaleDebugLogs && EnableMartingale)
+            {
+               PrintFormat("Martingale BUY levels=[%d,%d,%d] base=[%.4f, %.4f, %.4f] adjusted=[%.4f, %.4f, %.4f]",
+                           g_martingale_levels[0], g_martingale_levels[1], g_martingale_levels[2],
+                           lots1, lots2, lots3, martLots1, martLots2, martLots3);
+            }
             if(rtp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, martLots1, ask, rtp1, adj_sl1, StringFormat("TP1 %s", tstamp));
             if(rtp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, martLots2, ask, rtp2, adj_sl2, StringFormat("TP2 %s", tstamp));
             if(rtp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, martLots3, ask, rtp3, adj_sl3, StringFormat("TP3 %s", tstamp));
@@ -532,6 +540,12 @@ void OnTick()
             double martLots1 = ApplyMartingaleToLots(lots1, 0);
             double martLots2 = ApplyMartingaleToLots(lots2, 1);
             double martLots3 = ApplyMartingaleToLots(lots3, 2);
+            if(MartingaleDebugLogs && EnableMartingale)
+            {
+               PrintFormat("Martingale SELL levels=[%d,%d,%d] base=[%.4f, %.4f, %.4f] adjusted=[%.4f, %.4f, %.4f]",
+                           g_martingale_levels[0], g_martingale_levels[1], g_martingale_levels[2],
+                           lots1, lots2, lots3, martLots1, martLots2, martLots3);
+            }
             if(rtp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, martLots1, bid, rtp1, adj_sl1, StringFormat("TP1 %s", tstamp));
             if(rtp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, martLots2, bid, rtp2, adj_sl2, StringFormat("TP2 %s", tstamp));
             if(rtp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, martLots3, bid, rtp3, adj_sl3, StringFormat("TP3 %s", tstamp));
@@ -597,7 +611,11 @@ void UpdateMartingaleLevels()
    if(!EnableMartingale)
    {
       for(int i=0; i<3; ++i)
+      {
          g_martingale_levels[i] = 1;
+         g_prev_logged_levels[i] = 1;
+         g_last_martingale_deal_tp[i] = 0;
+      }
       return;
    }
 
@@ -605,8 +623,13 @@ void UpdateMartingaleLevels()
       return;
 
    int deals = HistoryDealsTotal();
-   for(int i = 0; i < deals; ++i)
+   bool processed_tp[3] = {false, false, false};
+   int processed_count = 0;
+   for(int i = deals - 1; i >= 0; --i)
    {
+      if(processed_count >= 3)
+         break;
+
       ulong deal_ticket = HistoryDealGetTicket(i);
       if(deal_ticket == 0)
          continue;
@@ -634,6 +657,12 @@ void UpdateMartingaleLevels()
       if(tp_index < 0)
          continue;
 
+      if(processed_tp[tp_index])
+         continue;
+
+      processed_tp[tp_index] = true;
+      processed_count++;
+
       if(deal_ticket <= g_last_martingale_deal_tp[tp_index])
          continue;
 
@@ -642,11 +671,19 @@ void UpdateMartingaleLevels()
                     + HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION)
                     + HistoryDealGetDouble(deal_ticket, DEAL_FEE);
 
+      int old_level = g_martingale_levels[tp_index];
       if(profit < -1e-8)
          g_martingale_levels[tp_index] = MathMin(10, g_martingale_levels[tp_index] + 1);
       else
          g_martingale_levels[tp_index] = 1;
 
+      if(MartingaleDebugLogs && g_martingale_levels[tp_index] != g_prev_logged_levels[tp_index])
+      {
+         PrintFormat("Martingale level update TP%d: deal=%s profit=%.2f level %d -> %d",
+                     tp_index+1, LongToString((long)deal_ticket), profit, old_level, g_martingale_levels[tp_index]);
+      }
+
+      g_prev_logged_levels[tp_index] = g_martingale_levels[tp_index];
       g_last_martingale_deal_tp[tp_index] = deal_ticket;
    }
 }

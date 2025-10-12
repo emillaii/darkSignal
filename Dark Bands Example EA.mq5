@@ -134,7 +134,7 @@ datetime g_last_sell_bar_time = 0;
 int      g_martingale_levels[3] = {1, 1, 1};
 ulong    g_last_martingale_deal_tp[3] = {0, 0, 0};
 int      g_prev_logged_levels[3] = {1, 1, 1};
-ulong    g_open_order_ticket_tp[3] = {0, 0, 0};
+ulong    g_active_position_tp[3] = {0, 0, 0};
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -616,7 +616,7 @@ void UpdateMartingaleLevels()
          g_martingale_levels[i] = 1;
          g_prev_logged_levels[i] = 1;
          g_last_martingale_deal_tp[i] = 0;
-         g_open_order_ticket_tp[i] = 0;
+         g_active_position_tp[i] = 0;
       }
       return;
    }
@@ -647,11 +647,11 @@ void UpdateMartingaleLevels()
       if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY && entry != DEAL_ENTRY_INOUT)
          continue;
 
-      ulong order_ticket = HistoryDealGetInteger(deal_ticket, DEAL_ORDER);
+      ulong position_id = HistoryDealGetInteger(deal_ticket, DEAL_POSITION_ID);
       int tp_index = -1;
       for(int idx=0; idx<3; ++idx)
       {
-         if(g_open_order_ticket_tp[idx] > 0 && g_open_order_ticket_tp[idx] == order_ticket)
+         if(g_active_position_tp[idx] > 0 && g_active_position_tp[idx] == position_id)
          {
             tp_index = idx;
             break;
@@ -685,19 +685,28 @@ void UpdateMartingaleLevels()
 
       int old_level = g_martingale_levels[tp_index];
       if(profit < -1e-8)
-         g_martingale_levels[tp_index] = MathMin(10, g_martingale_levels[tp_index] + 1);
-      else
-         g_martingale_levels[tp_index] = 1;
-
-      if(MartingaleDebugLogs && g_martingale_levels[tp_index] != g_prev_logged_levels[tp_index])
       {
-         PrintFormat("Martingale level update TP%d: deal=%s profit=%.2f level %d -> %d",
-                     tp_index+1, LongToString((long)deal_ticket), profit, old_level, g_martingale_levels[tp_index]);
+         g_martingale_levels[tp_index] = MathMin(10, g_martingale_levels[tp_index] + 1);
+         if(MartingaleDebugLogs)
+         {
+            double cfg = GetMartingaleConfigValue(g_martingale_levels[tp_index]);
+            PrintFormat("Martingale loss TP%d: deal=%s profit=%.2f level %d -> %d (factor %.4f)",
+                        tp_index+1, LongToString((long)deal_ticket), profit, old_level, g_martingale_levels[tp_index], cfg);
+         }
+      }
+      else
+      {
+         g_martingale_levels[tp_index] = 1;
+         if(MartingaleDebugLogs && old_level != 1)
+         {
+            PrintFormat("Martingale reset TP%d: deal=%s profit=%.2f level %d -> 1",
+                        tp_index+1, LongToString((long)deal_ticket), profit, old_level);
+         }
       }
 
       g_prev_logged_levels[tp_index] = g_martingale_levels[tp_index];
       g_last_martingale_deal_tp[tp_index] = deal_ticket;
-      g_open_order_ticket_tp[tp_index] = 0;
+      g_active_position_tp[tp_index] = 0;
    }
 }
 
@@ -785,9 +794,9 @@ bool TryPlaceOrder(ENUM_ORDER_TYPE type, double lots, double mkt_price, double t
       bool ok = trade.Buy(lots, _Symbol, 0.0, nsl, ntp, note);
       if(ok && tp_index >= 0 && tp_index < 3)
       {
-         ulong order_ticket = trade.ResultOrder();
-         if(order_ticket > 0)
-            g_open_order_ticket_tp[tp_index] = order_ticket;
+         ulong pos_id = trade.ResultPosition();
+         if(pos_id > 0)
+            g_active_position_tp[tp_index] = pos_id;
       }
       return ok;
    }
@@ -807,9 +816,9 @@ bool TryPlaceOrder(ENUM_ORDER_TYPE type, double lots, double mkt_price, double t
       bool ok = trade.Sell(lots, _Symbol, 0.0, nsl, ntp, note);
       if(ok && tp_index >= 0 && tp_index < 3)
       {
-         ulong order_ticket = trade.ResultOrder();
-         if(order_ticket > 0)
-            g_open_order_ticket_tp[tp_index] = order_ticket;
+         ulong pos_id = trade.ResultPosition();
+         if(pos_id > 0)
+            g_active_position_tp[tp_index] = pos_id;
       }
       return ok;
    }

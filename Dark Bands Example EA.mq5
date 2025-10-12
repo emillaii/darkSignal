@@ -134,6 +134,7 @@ datetime g_last_sell_bar_time = 0;
 int      g_martingale_levels[3] = {1, 1, 1};
 ulong    g_last_martingale_deal_tp[3] = {0, 0, 0};
 int      g_prev_logged_levels[3] = {1, 1, 1};
+ulong    g_open_order_ticket_tp[3] = {0, 0, 0};
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -516,9 +517,9 @@ void OnTick()
                            g_martingale_levels[0], g_martingale_levels[1], g_martingale_levels[2],
                            lots1, lots2, lots3, martLots1, martLots2, martLots3);
             }
-            if(rtp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, martLots1, ask, rtp1, adj_sl1, StringFormat("TP1 %s", tstamp));
-            if(rtp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, martLots2, ask, rtp2, adj_sl2, StringFormat("TP2 %s", tstamp));
-            if(rtp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, martLots3, ask, rtp3, adj_sl3, StringFormat("TP3 %s", tstamp));
+            if(rtp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, martLots1, ask, rtp1, adj_sl1, StringFormat("TP1 %s", tstamp), 0);
+            if(rtp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, martLots2, ask, rtp2, adj_sl2, StringFormat("TP2 %s", tstamp), 1);
+            if(rtp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_BUY, martLots3, ask, rtp3, adj_sl3, StringFormat("TP3 %s", tstamp), 2);
             g_last_buy_bar_time = bt_curr[0];
          }
          // SELL side
@@ -546,9 +547,9 @@ void OnTick()
                            g_martingale_levels[0], g_martingale_levels[1], g_martingale_levels[2],
                            lots1, lots2, lots3, martLots1, martLots2, martLots3);
             }
-            if(rtp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, martLots1, bid, rtp1, adj_sl1, StringFormat("TP1 %s", tstamp));
-            if(rtp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, martLots2, bid, rtp2, adj_sl2, StringFormat("TP2 %s", tstamp));
-            if(rtp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, martLots3, bid, rtp3, adj_sl3, StringFormat("TP3 %s", tstamp));
+            if(rtp1!=EMPTY_VALUE && adj_sl1!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, martLots1, bid, rtp1, adj_sl1, StringFormat("TP1 %s", tstamp), 0);
+            if(rtp2!=EMPTY_VALUE && adj_sl2!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, martLots2, bid, rtp2, adj_sl2, StringFormat("TP2 %s", tstamp), 1);
+            if(rtp3!=EMPTY_VALUE && adj_sl3!=EMPTY_VALUE) TryPlaceOrder(ORDER_TYPE_SELL, martLots3, bid, rtp3, adj_sl3, StringFormat("TP3 %s", tstamp), 2);
             g_last_sell_bar_time = bt_curr[0];
          }
       }
@@ -615,6 +616,7 @@ void UpdateMartingaleLevels()
          g_martingale_levels[i] = 1;
          g_prev_logged_levels[i] = 1;
          g_last_martingale_deal_tp[i] = 0;
+         g_open_order_ticket_tp[i] = 0;
       }
       return;
    }
@@ -645,14 +647,24 @@ void UpdateMartingaleLevels()
       if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY && entry != DEAL_ENTRY_INOUT)
          continue;
 
-      string comment = HistoryDealGetString(deal_ticket, DEAL_COMMENT);
+      ulong order_ticket = HistoryDealGetInteger(deal_ticket, DEAL_ORDER);
       int tp_index = -1;
-      if(StringFind(comment, "TP1") >= 0)
-         tp_index = 0;
-      else if(StringFind(comment, "TP2") >= 0)
-         tp_index = 1;
-      else if(StringFind(comment, "TP3") >= 0)
-         tp_index = 2;
+      for(int idx=0; idx<3; ++idx)
+      {
+         if(g_open_order_ticket_tp[idx] > 0 && g_open_order_ticket_tp[idx] == order_ticket)
+         {
+            tp_index = idx;
+            break;
+         }
+      }
+
+      if(tp_index < 0)
+      {
+         string comment = HistoryDealGetString(deal_ticket, DEAL_COMMENT);
+         if(StringFind(comment, "TP1") >= 0) tp_index = 0;
+         else if(StringFind(comment, "TP2") >= 0) tp_index = 1;
+         else if(StringFind(comment, "TP3") >= 0) tp_index = 2;
+      }
 
       if(tp_index < 0)
          continue;
@@ -685,6 +697,7 @@ void UpdateMartingaleLevels()
 
       g_prev_logged_levels[tp_index] = g_martingale_levels[tp_index];
       g_last_martingale_deal_tp[tp_index] = deal_ticket;
+      g_open_order_ticket_tp[tp_index] = 0;
    }
 }
 
@@ -725,7 +738,7 @@ double SnapPrice(const double price, const double tick_size, const int digits)
 //+------------------------------------------------------------------+
 //| Helper: place a market order with validation                    |
 //+------------------------------------------------------------------+
-bool TryPlaceOrder(ENUM_ORDER_TYPE type, double lots, double mkt_price, double tp, double sl, const string note)
+bool TryPlaceOrder(ENUM_ORDER_TYPE type, double lots, double mkt_price, double tp, double sl, const string note, const int tp_index)
 {
    // Normalize prices
    int digits = (int)_Digits;
@@ -770,6 +783,12 @@ bool TryPlaceOrder(ENUM_ORDER_TYPE type, double lots, double mkt_price, double t
          nsl = MathRound(nsl/tick_size)*tick_size;
       }
       bool ok = trade.Buy(lots, _Symbol, 0.0, nsl, ntp, note);
+      if(ok && tp_index >= 0 && tp_index < 3)
+      {
+         ulong order_ticket = trade.ResultOrder();
+         if(order_ticket > 0)
+            g_open_order_ticket_tp[tp_index] = order_ticket;
+      }
       return ok;
    }
    else if(type==ORDER_TYPE_SELL)
@@ -786,6 +805,12 @@ bool TryPlaceOrder(ENUM_ORDER_TYPE type, double lots, double mkt_price, double t
          nsl = MathRound(nsl/tick_size)*tick_size;
       }
       bool ok = trade.Sell(lots, _Symbol, 0.0, nsl, ntp, note);
+      if(ok && tp_index >= 0 && tp_index < 3)
+      {
+         ulong order_ticket = trade.ResultOrder();
+         if(order_ticket > 0)
+            g_open_order_ticket_tp[tp_index] = order_ticket;
+      }
       return ok;
    }
    return false;
